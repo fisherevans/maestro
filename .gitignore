@@ -1,0 +1,10 @@
+# Build artifacts
+/maestro
+/cmd/maestro/maestro
+
+# OS / editor
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
