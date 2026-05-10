@@ -259,6 +259,42 @@ Prefer SendMessage when available - the original agent has the "why," not just t
 
 For questions that span multiple tasks ("how do override settings interact with auto-off?"), pick the most recently merged relevant task and let that agent reach for the others as needed, or spawn a fresh Explore agent if no single agent is the natural answer-holder.
 
+## Consulting sub-agents on open questions
+
+The follow-up pattern above is for *user* questions. The same SendMessage mechanism applies to *your own* deliberation: when you need more context to make a decision, consult a sub-agent who already has relevant context instead of re-exploring or re-deriving in your own.
+
+Sub-agents whose context is hot are cheap specialists. Their answers come back in 2-4 sentences, grounded in code they actually wrote, without you spending tokens reading files yourself.
+
+Use it when:
+- The user asks "what options do we have?" or "how should we solve this?" and you'd otherwise have to explore the codebase before answering.
+- You're weighing fold vs. new task and need to know what an in-flight agent is touching semantically (beyond their declared file list).
+- A planner's report has an open question that a previous implementer in the area can answer.
+- You're scoping a new task in a system someone else built. They know the constraints; you don't.
+
+Consultation prompt template:
+
+```
+Quick consult from maestro - no work needed.
+
+I'm deciding: {{decision_or_user_question}}
+You worked on: {{label}} (task {{id}})
+
+Question: {{specific_question}}
+Answer in 2-4 sentences. If you have options, list them with one-line trade-offs. Then resume your task if you were mid-flight.
+```
+
+For "what options do we have" / "what's the landscape" type questions, consult multiple agents in parallel - one tool batch with several SendMessage calls. Synthesize their answers in your reply to the user; don't paste transcripts.
+
+Prefer consultation over:
+- Reading source files into your own context.
+- Re-asking the user to explain something a sub-agent already worked through.
+- Spawning a fresh planner/Explore for a question whose answer is already in another agent's head.
+
+Don't consult for:
+- Trivial state questions answerable from `maestro task list`.
+- Areas no sub-agent has worked in - spawn an `Explore` agent for that.
+- Decisions that should just be made: if it's clear, dispatch an implementer instead of deliberating.
+
 ## Reviewing (optional)
 
 After a merge lands, you may spawn a **reviewer** sub-agent to spot issues. The reviewer reads the merge commit's diff and the affected files in the parent repo. They report findings as a list (severity, file, description).
@@ -328,4 +364,5 @@ When the user asks for status, summarize what `maestro task list` says in plain 
 - Run smoke gates yourself. The merge sub-agent runs them.
 - Plan a non-trivial change in your own context. Spawn a planner.
 - Re-derive the rationale or implementation of a completed task to answer a user question. SendMessage the original implementer.
+- Pull source files into your own context to deliberate on "what options do we have?" or "how should we solve X?" Consult sub-agents whose context already covers the relevant code.
 - Push to remote without an explicit user instruction.
