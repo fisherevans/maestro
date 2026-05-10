@@ -539,38 +539,46 @@ Updates during work only when:
 
 ### Substantive completion summaries
 
-When a task merges (or otherwise resolves in a way that ends the user's interest in it), produce a real summary, not "`tN: <label>` merged." The format below is the bar:
+When a task merges (or otherwise resolves in a way that ends the user's interest in it), produce a real summary, not "`tN: <label>` merged." Write it like a PR description from someone who actually implemented the change: **strategy, key design decisions, trade-offs, anything worth flagging**. Not a file-by-file walkthrough or a diff summary. The user can read the diff if they want; they're asking you for the interpretation that sits above it.
+
+The format below is the bar:
 
 ```
 **t14: fix login race** — merged.
 
-What shipped: rewired the credential check in `auth/login.go` to use sync.Once,
-so concurrent requests from the same client deduplicate. Added two tests in
-`auth/login_test.go` covering the concurrent-request path and the
-single-request fast path.
+The race came from the credential check running in parallel for the same
+client: two concurrent requests both went through validation, ending up with
+two sessions where one was expected. The fix wraps the credential check in
+`sync.Once` keyed by clientID, so the first request through does the
+validation and subsequent concurrent requests attach to its result. This
+trades a bit of memory (one Once per active client) for correctness, which
+matches how the auth package already dedups in adjacent code paths.
 
-Deferred: the token refresh path has a similar shape but the implementer left
-it alone - flagged as a follow-up. Want me to spin up a separate task?
+Deferred: the token-refresh path has the same race shape and would benefit
+from the same treatment. Implementer flagged but left it alone to keep scope
+tight. Want me to spin up a separate task?
 
-Review concerns (non-blocking, accepted): sync.Once is keyed by clientID, not
-clientID+credential; reviewer flagged that two requests with the same
-clientID but stale credentials could be coalesced incorrectly. Accepted
-because the credential check itself is idempotent inside the once.Do, but
-worth knowing if you touch this area again.
-
-Files: `auth/login.go`, `auth/login_test.go`.
+Review concerns (non-blocking, accepted): keying by clientID alone means two
+requests with the same client but stale-vs-fresh credentials could coalesce.
+Accepted because the credential check is idempotent inside the Once.Do, but
+worth flagging if you ever change validation to depend on the credential
+value itself.
 ```
 
-The summary draws from:
-- The implementer's `SUMMARY` (what shipped, condensed).
-- The implementer's `DEFERRED` field (what was explicitly skipped).
-- The implementer's `CONCERNS` field (anything the implementer wanted flagged).
-- The merge sub-agent's `REVIEW_FINDINGS` (what review caught - blocking findings should have stopped the merge; non-blocking findings get surfaced here with your read on whether they're being accepted, fixed, or deferred).
-- The reported `FILES` list (high-level, not exhaustive).
+What goes in:
+- **Strategy / approach**: the conceptual fix, why it works, why it was chosen. Pull from the implementer's `SUMMARY` and `NOTES`.
+- **Key design decisions and trade-offs**: anything the implementer chose-among-alternatives, especially if reviewers flagged it. Pull from `CONCERNS` and `REVIEW_FINDINGS`.
+- **Deferred**: scope kept tight on purpose; what was left for follow-up. Pull from `DEFERRED`. Optionally offer to spin a follow-up task.
+- **Review concerns the user should know about**: non-blocking findings the merge sub-agent surfaced, with your read on how they were handled (accepted with rationale, fixed in continuation, deferred). Don't bury these - they're often the most useful part of the summary for "if you touch X again, watch Y."
 
-For trivial single-file fixes (typo, log message tweak), a shorter summary is fine. The bar is: after reading the summary, the user should trust they know what landed and not need to ask "wait, what did it actually do?"
+What stays out:
+- File lists, line counts, diff stats. The user can run `git show` if they want them.
+- Test scaffolding details ("added 3 tests in X_test.go"). Mention that tests cover the behavior if it matters, not where they live.
+- Step-by-step walkthroughs of what the implementer did. That's the middle; it stays hidden.
 
-If REVIEW blocked the merge, the message looks different: "`t14` blocked by review - here's what came up, what do you want to do?" with the findings and options (fix in a continuation, accept and force-merge, abandon).
+For trivial fixes (typo, log message, single-line patch), a one-line summary is fine ("`t14: typo in login error message` — merged. Fixed `recived` → `received` in the rejection log line."). The strategy/design framing matters in proportion to the change's substance.
+
+If REVIEW blocked the merge, the message looks different: "`t14` blocked by review - here's what came up, what do you want to do?" with the findings and options (fix in a continuation, accept and force-merge, abandon). Same principle: the user wants the substance, not the diff.
 
 ### End-of-turn signal
 
@@ -602,7 +610,7 @@ Skip the signal after trivial conversational turns. ("What's running?" → `maes
 - **Condensed too aggressively** and lost actionable detail. Decisions and constraints should appear verbatim in the condensed summary; troubleshooting noise can drop. If you condense and then can't answer "why did we do X" without reading code, you compressed too far. Re-condensing with more detail is fine.
 - **Tag drift** went uncorrected for too long. `auth`, `auth-flow`, `auth/login` all in use means search by tag misses the others. At session start, eyeball `maestro tag list --with-counts` and run `tag rename` to canonicalize before adding new tasks.
 - **Skipped `maestro search` before creating a task** and ended up re-implementing or contradicting a prior decision. The 5-second search at task creation is much cheaper than the rework.
-- **Terse "task done" pings** lost the user's trust because they couldn't tell what actually landed. The orchestrator's job at task completion is to produce a real summary - what shipped, what was deferred, what review caught - not a one-line ack. If the user has to ask "wait, what did it actually do?", you skimped on the summary.
+- **Terse "task done" pings** lost the user's trust because they couldn't tell what actually landed. The orchestrator's job at task completion is to produce a PR-description-style summary: strategy, design decisions, trade-offs, what was deferred, what review caught. Not a file list, not a diff stat. If the user has to ask "what did it actually do?" or "why that approach?", you skimped on the summary.
 - **Silent dispatch** lost the user's chance to course-correct early. Every dispatch starts with a rephrase of the ask. If you would have understood it differently in plain English, the user wants to know that before the work lands, not after.
 - **REVIEW skipped because the code built** missed flawed-but-functional work. Build success is necessary but not sufficient; REVIEW is what catches design issues that compile fine. Don't accept a smoke-passing merge as "good"; check whether REVIEW raised anything and surface it.
 - **Skipped the IN PROGRESS / NOW IDLE end-of-turn signal** and left the user wondering whether the orchestrator is still working or has handed back. The signal is two lines max - always include it after substantive work.

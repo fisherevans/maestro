@@ -178,7 +178,7 @@ Findings persist as Notes (`Type=review`) so search and condensation can surface
 The skill structures every orchestrator turn around three things the user cares about:
 
 - **Rephrase the ask at dispatch** so the user can course-correct before sub-agents burn tokens. Embedded in the same message that announces the spawn ("got it - fixing the login race in auth/login.go. dispatching t14.").
-- **Substantive completion summary** when work merges: what shipped, what was deferred, what review caught, files touched. Not "task done."
+- **Substantive completion summary** when work merges: a PR-description-style writeup covering strategy, design decisions, trade-offs, what was deferred, what review caught. Not a file list or diff stat - the user can read the diff if they want.
 - **End-of-turn signal** every substantive turn closes with `**IN PROGRESS:** ...` (active tasks listed) or `**NOW IDLE.**` (everything handed back). Bolded so the user can find it at a glance.
 
 The middle (file edits, iteration noise) stays out of the user-facing layer. Only actionable items interrupt: REVIEW pushback, smoke failures, needs-info from a sub-agent.
