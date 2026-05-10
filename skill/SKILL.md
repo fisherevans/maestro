@@ -60,7 +60,10 @@ When the user says something like "let's start fresh" or "milestone reached" or 
 - `maestro task abandon <id> [--note=...]` shortcut for status=abandoned.
 - `maestro conflicts <id>` lists active tasks whose declared files overlap with `<id>`'s declared files. Use this before dispatching to detect serialize-vs-parallel.
 - `maestro worktree path <id>` prints the absolute worktree path.
-- `maestro worktree cleanup <id> [--force]` removes the worktree dir and prunes git's record.
+- `maestro worktree cleanup <id> [--force]` removes the worktree dir and prunes git's record. Keeps the task record (and `agent_id`) so SendMessage to the original implementer still works for follow-up questions.
+- `maestro worktree restore <id>` re-creates the worktree dir from the task's branch. Use this if cleanup was premature and an in-flight agent still needs the directory.
+- `maestro task delete <id> [--force] [--keep-worktree]` removes the task record entirely. After this, the task ID disappears from `task list` and SendMessage to that agent_id is no longer the natural follow-up path. Use sparingly during a session; mostly a user-driven cleanup op.
+- `maestro project sweep [--older-than=DURATION] [--status=...] [--apply]` bulk-deletes old completed tasks (worktrees + records). Default: dry run, 7d threshold, merged+abandoned only. The user may run this between sessions or via cron.
 
 The CLI does not run git merge, rebase, or pull. You do that yourself. The CLI is for state and worktree creation only.
 
@@ -187,6 +190,17 @@ Final message format (one field per line, brief):
 - `error`: read the message; reroute or escalate as appropriate.
 
 Never push to remote without explicit user instruction.
+
+### Cleanup posture
+
+After the merge sub-agent reports `merged`, the worktree dir is gone (the merge sub-agent ran `maestro worktree cleanup`) but the task record stays - that's intentional, since `agent_id` on the record is what SendMessage uses for follow-up questions on the merged work.
+
+Don't `task delete` merged tasks during a working session. The record is small (no disk cost beyond a JSON entry) and losing it cuts off the cheapest path to "how does X work?" answers.
+
+If the user asks to clean up explicitly ("delete that task," "wipe old stuff," "we hit a milestone"), it's their call:
+- Specific task: `maestro task delete <id>`
+- Old completed tasks: `maestro project sweep [--older-than=7d] [--apply]`
+- Whole project boundary: see Milestones above (fork or rename)
 
 ## Worktree staleness
 

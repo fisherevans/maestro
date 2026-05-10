@@ -70,6 +70,19 @@ func (g *Git) CreateWorktree(path, branch, base string) error {
 	return nil
 }
 
+// AttachWorktree creates a worktree at path that checks out an existing
+// branch. Used by `worktree restore` to recover a cleaned-up workspace
+// without inventing a new branch.
+func (g *Git) AttachWorktree(path, branch string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("mkdir worktree parent: %w", err)
+	}
+	if _, err := g.Run("worktree", "add", path, branch); err != nil {
+		return err
+	}
+	return nil
+}
+
 // RemoveWorktree removes the worktree directory and prunes the registration.
 // Pass force=true to remove a worktree with uncommitted changes.
 func (g *Git) RemoveWorktree(path string, force bool) error {

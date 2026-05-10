@@ -188,6 +188,19 @@ func (st *State) FindTask(id string) *Task {
 	return nil
 }
 
+// RemoveTask drops a task from the slice. Returns true if a task was removed.
+// The next-task-number counter is intentionally not rolled back; new tasks
+// keep getting fresh IDs even after deletes.
+func (st *State) RemoveTask(id string) bool {
+	for i, t := range st.Tasks {
+		if t.ID == id {
+			st.Tasks = append(st.Tasks[:i], st.Tasks[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
 // AllocTaskID hands out the next sequential task ID and bumps the counter on
 // the project. The ID format is "t<N>" where N starts at 1.
 func (st *State) AllocTaskID() string {

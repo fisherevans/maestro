@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +31,7 @@ Project commands:
   project find --repo=<path> List projects whose repo matches <path>
   project update             Update smoke gate or default base branch
   project rename --to=<name> Rename the current project (requires no active worktrees)
+  project sweep              Bulk-delete old completed tasks (dry run unless --apply)
 
 Task commands:
   task new                   Create a task and worktree
@@ -43,7 +45,9 @@ Task commands:
 Coordination:
   conflicts <id>             Show declared-file overlap with other active tasks
   worktree path <id>         Print absolute path of a task's worktree
-  worktree cleanup <id>      Remove a task's worktree
+  worktree cleanup <id>      Remove a task's worktree (keep the task record)
+  worktree restore <id>      Re-create a worktree from its branch (recovery)
+  task delete <id>           Delete a task record (and its worktree by default)
 
 Project scope:
   Most commands need a project. Pass --project=<name> or set MAESTRO_PROJECT.
@@ -218,7 +222,7 @@ func resolveRepoPath(flagVal string) (string, error) {
 
 func cmdProject(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: maestro project <list|show|find|update|rename>")
+		return errors.New("usage: maestro project <list|show|find|update|rename|sweep>")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -232,6 +236,8 @@ func cmdProject(args []string) error {
 		return cmdProjectUpdate(rest)
 	case "rename":
 		return cmdProjectRename(rest)
+	case "sweep":
+		return cmdProjectSweep(rest)
 	default:
 		return fmt.Errorf("unknown subcommand: project %s", sub)
 	}
@@ -355,6 +361,115 @@ func cmdProjectUpdate(args []string) error {
 	return printProject(os.Stdout, &st.Project, *asJSON)
 }
 
+func cmdProjectSweep(args []string) error {
+	fs := flag.NewFlagSet("project sweep", flag.ContinueOnError)
+	project := fs.String("project", "", "project name")
+	olderThan := fs.String("older-than", "7d", "tasks last updated longer ago than this are eligible (e.g. 24h, 7d, 30d)")
+	statusFilter := fs.String("status", "merged,abandoned", "comma-separated statuses to consider eligible")
+	apply := fs.Bool("apply", false, "actually delete; without --apply this is a dry run")
+	keepWT := fs.Bool("keep-worktrees", false, "delete records but leave worktree directories on disk")
+	asJSON := fs.Bool("json", false, "JSON output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cutoff, err := parseExtendedDuration(*olderThan)
+	if err != nil {
+		return err
+	}
+	store, st, err := loadState(*project)
+	if err != nil {
+		return err
+	}
+	statuses := make(map[maestro.TaskStatus]bool)
+	for _, s := range strings.Split(*statusFilter, ",") {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			statuses[maestro.TaskStatus(s)] = true
+		}
+	}
+	deadline := time.Now().Add(-cutoff)
+	var eligible []*maestro.Task
+	for _, t := range st.Tasks {
+		if !statuses[t.Status] {
+			continue
+		}
+		if t.UpdatedAt.After(deadline) {
+			continue
+		}
+		eligible = append(eligible, t)
+	}
+
+	if *asJSON {
+		summaries := make([]map[string]any, 0, len(eligible))
+		for _, t := range eligible {
+			summaries = append(summaries, map[string]any{
+				"id":         t.ID,
+				"label":      t.Label,
+				"status":     t.Status,
+				"updated_at": t.UpdatedAt,
+				"worktree":   t.WorktreePath,
+			})
+		}
+		out := map[string]any{
+			"dry_run":    !*apply,
+			"older_than": *olderThan,
+			"eligible":   summaries,
+		}
+		if err := writeJSON(os.Stdout, out); err != nil {
+			return err
+		}
+	} else {
+		if !*apply {
+			fmt.Println("dry run; pass --apply to actually delete")
+		}
+		if len(eligible) == 0 {
+			fmt.Println("(nothing to sweep)")
+			return nil
+		}
+		for _, t := range eligible {
+			fmt.Printf("%s  %-12s  %s  (updated %s)\n", t.ID, t.Status, taskListLabel(t), t.UpdatedAt.Format(time.RFC3339))
+		}
+	}
+
+	if !*apply {
+		return nil
+	}
+
+	g := &maestro.Git{RepoPath: st.Project.RepoPath}
+	swept := 0
+	for _, t := range eligible {
+		if !*keepWT {
+			if _, statErr := os.Stat(t.WorktreePath); statErr == nil {
+				if err := g.RemoveWorktree(t.WorktreePath, true); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: removing worktree for %s: %v\n", t.ID, err)
+				}
+			}
+		}
+		st.RemoveTask(t.ID)
+		swept++
+	}
+	if err := store.Save(st); err != nil {
+		return err
+	}
+	if !*asJSON {
+		fmt.Printf("swept %d task(s)\n", swept)
+	}
+	return nil
+}
+
+// parseExtendedDuration accepts time.ParseDuration plus a `<N>d` suffix for days,
+// since the CLI's natural cutoffs ("7d", "30d") don't fit stdlib duration syntax.
+func parseExtendedDuration(s string) (time.Duration, error) {
+	if strings.HasSuffix(s, "d") {
+		n, err := strconv.Atoi(strings.TrimSuffix(s, "d"))
+		if err != nil {
+			return 0, fmt.Errorf("invalid duration %q (use e.g. 7d, 24h, 90m)", s)
+		}
+		return time.Duration(n) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(s)
+}
+
 func cmdProjectRename(args []string) error {
 	fs := flag.NewFlagSet("project rename", flag.ContinueOnError)
 	project := fs.String("project", "", "current project name")
@@ -392,7 +507,7 @@ func cmdProjectRename(args []string) error {
 
 func cmdTask(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: maestro task <new|list|get|update|files|done|abandon>")
+		return errors.New("usage: maestro task <new|list|get|update|files|done|abandon|delete>")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -410,6 +525,8 @@ func cmdTask(args []string) error {
 		return cmdTaskDone(rest)
 	case "abandon":
 		return cmdTaskAbandon(rest)
+	case "delete":
+		return cmdTaskDelete(rest)
 	default:
 		return fmt.Errorf("unknown subcommand: task %s", sub)
 	}
@@ -702,6 +819,59 @@ func cmdTaskAbandon(args []string) error {
 	return printTask(os.Stdout, t, *asJSON)
 }
 
+func cmdTaskDelete(args []string) error {
+	fs := flag.NewFlagSet("task delete", flag.ContinueOnError)
+	project := fs.String("project", "", "project name")
+	keepWT := fs.Bool("keep-worktree", false, "remove the task record but leave the worktree on disk")
+	force := fs.Bool("force", false, "delete even if the task is still active")
+	asJSON := fs.Bool("json", false, "JSON output")
+	id, err := parseFlagsWithID(fs, args)
+	if err != nil {
+		return err
+	}
+	store, st, err := loadState(*project)
+	if err != nil {
+		return err
+	}
+	t := st.FindTask(id)
+	if t == nil {
+		return fmt.Errorf("task %s not found", id)
+	}
+	if t.Status.IsActive() && !*force {
+		return fmt.Errorf("task %s is %s; pass --force to delete an active task", id, t.Status)
+	}
+	wtRemoved := false
+	if !*keepWT {
+		if _, statErr := os.Stat(t.WorktreePath); statErr == nil {
+			g := &maestro.Git{RepoPath: st.Project.RepoPath}
+			if err := g.RemoveWorktree(t.WorktreePath, true); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: removing worktree at %s: %v\n", t.WorktreePath, err)
+			} else {
+				wtRemoved = true
+			}
+		}
+	}
+	st.RemoveTask(id)
+	if err := store.Save(st); err != nil {
+		return err
+	}
+	if *asJSON {
+		return writeJSON(os.Stdout, map[string]any{
+			"deleted":         id,
+			"worktree_removed": wtRemoved,
+			"kept_worktree":   *keepWT,
+		})
+	}
+	fmt.Printf("deleted: %s", id)
+	if wtRemoved {
+		fmt.Printf(" (worktree removed)")
+	} else if *keepWT {
+		fmt.Printf(" (worktree kept at %s)", t.WorktreePath)
+	}
+	fmt.Println()
+	return nil
+}
+
 // ---- conflicts ----
 
 func cmdConflicts(args []string) error {
@@ -769,7 +939,7 @@ func overlapFiles(a, b []string) []string {
 
 func cmdWorktree(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: maestro worktree <path|cleanup>")
+		return errors.New("usage: maestro worktree <path|cleanup|restore>")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -777,6 +947,8 @@ func cmdWorktree(args []string) error {
 		return cmdWorktreePath(rest)
 	case "cleanup":
 		return cmdWorktreeCleanup(rest)
+	case "restore":
+		return cmdWorktreeRestore(rest)
 	default:
 		return fmt.Errorf("unknown subcommand: worktree %s", sub)
 	}
@@ -822,6 +994,35 @@ func cmdWorktreeCleanup(args []string) error {
 		return err
 	}
 	fmt.Printf("removed: %s\n", t.WorktreePath)
+	return nil
+}
+
+func cmdWorktreeRestore(args []string) error {
+	fs := flag.NewFlagSet("worktree restore", flag.ContinueOnError)
+	project := fs.String("project", "", "project name")
+	id, err := parseFlagsWithID(fs, args)
+	if err != nil {
+		return err
+	}
+	_, st, err := loadState(*project)
+	if err != nil {
+		return err
+	}
+	t := st.FindTask(id)
+	if t == nil {
+		return fmt.Errorf("task %s not found", id)
+	}
+	if _, err := os.Stat(t.WorktreePath); err == nil {
+		return fmt.Errorf("worktree already exists at %s", t.WorktreePath)
+	}
+	g := &maestro.Git{RepoPath: st.Project.RepoPath}
+	if !g.BranchExists(t.Branch) {
+		return fmt.Errorf("branch %s no longer exists; restore is only supported for tasks whose branch is intact (merged tasks have their branch deleted)", t.Branch)
+	}
+	if err := g.AttachWorktree(t.WorktreePath, t.Branch); err != nil {
+		return err
+	}
+	fmt.Printf("restored: %s (branch %s)\n", t.WorktreePath, t.Branch)
 	return nil
 }
 

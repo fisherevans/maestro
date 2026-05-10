@@ -97,10 +97,15 @@ maestro task update <id> [--status=...] [--agent-id=...] [--label=...] [--note=.
 maestro task files <id> [--add=a,b] [--remove=a,b] [--set=a,b]
 maestro task done <id> [--summary=...] [--commit=...]
 maestro task abandon <id> [--note=...]
+maestro task delete <id> [--keep-worktree] [--force]
 maestro conflicts <id>
 maestro worktree path <id>
 maestro worktree cleanup <id> [--force]
+maestro worktree restore <id>
+maestro project sweep [--older-than=7d] [--status=merged,abandoned] [--apply] [--keep-worktrees]
 ```
+
+`worktree cleanup` removes the directory but keeps the task record so SendMessage to the original sub-agent still works for follow-up questions. `task delete` removes the record entirely (and the worktree by default). `project sweep` is the bulk version, dry-run by default; suitable for cron or a between-sessions tidy-up.
 
 `project find` is how the orchestrator notices it's been in a repo before. `project rename` requires no active worktrees (worktree paths are absolute and would break). For milestones / phase boundaries, just `maestro init` a new project name pointing at the same repo - multiple projects per repo is supported.
 
