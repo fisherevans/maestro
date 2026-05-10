@@ -28,7 +28,16 @@ Before doing anything else, identify or create the maestro project for the user'
    - `README.md` - look for a "testing" or "development" section.
    - Build manifests: `Makefile`, `Taskfile.yml`, `justfile`, `package.json` (scripts), `Cargo.toml`, `go.mod` (default to `go build ./... && go test ./...`), `pyproject.toml`.
    - `.github/workflows/*.yml` - whatever CI runs is usually the right gate, minus the slow integration tests.
-   Propose what you found to the user in one line ("smoke gate: `make test`, sound right?"). If you can't find anything obvious, ask. Don't ask if you're confident.
+
+   **Include dependency install steps in the smoke gate for any package manager present.** When a sub-agent adds a new dep mid-task, the parent repo's `node_modules` / `vendor` / `.venv` won't have it. Without an install step, `tsc` / `vite build` / `cargo test` fail with "module not found" *after* the merge has already landed. Bake install in:
+   - `package.json` present → `npm install --no-audit --no-fund` (or `npm ci` if a lockfile exists) before `tsc`/`vite`/`jest` etc.
+   - `Cargo.toml` → `cargo build` already fetches deps; no extra step needed.
+   - `pyproject.toml` with poetry → `poetry install --sync`.
+   - `go.mod` → `go build ./...` already resolves deps.
+
+   For multi-component repos (Go backend + N frontends), include each component's install + check chain, e.g. `(cd web/kids && npm install --no-audit --no-fund && npx tsc --noEmit && npx vite build)`.
+
+   Propose what you found to the user in one line ("smoke gate: `<full command>`, sound right?"). If you can't find anything obvious, ask. Don't ask if you're confident.
 5. Initialize: `maestro init --project=<name> --repo=<absolute-repo-path> [--base=<branch>] [--smoke-gate="<command>"]`. Omit `--base` to use the current branch in the repo. `init` is idempotent without `--force`.
 6. Set `MAESTRO_PROJECT=<name>` once via Bash (`export MAESTRO_PROJECT=<name>`). Every subsequent `maestro` call uses it.
 
@@ -60,9 +69,9 @@ When the user says something like "let's start fresh" or "milestone reached" or 
 - `maestro task abandon <id> [--note=...]` shortcut for status=abandoned.
 - `maestro conflicts <id>` lists active tasks whose declared files overlap with `<id>`'s declared files. Use this before dispatching to detect serialize-vs-parallel.
 - `maestro worktree path <id>` prints the absolute worktree path.
-- `maestro worktree cleanup <id> [--force]` removes the worktree dir and prunes git's record. Keeps the task record (and `agent_id`) so SendMessage to the original implementer still works for follow-up questions.
+- `maestro worktree cleanup <id> [--force]` removes the worktree dir and prunes git's record. Keeps the task record (label, summary, final_commit, agent_id) so follow-up questions can use rich-context fresh spawns or SendMessage continuations (if available).
 - `maestro worktree restore <id>` re-creates the worktree dir from the task's branch. Use this if cleanup was premature and an in-flight agent still needs the directory.
-- `maestro task delete <id> [--force] [--keep-worktree]` removes the task record entirely. After this, the task ID disappears from `task list` and SendMessage to that agent_id is no longer the natural follow-up path. Use sparingly during a session; mostly a user-driven cleanup op.
+- `maestro task delete <id> [--force] [--keep-worktree]` removes the task record entirely. After this, the task ID disappears from `task list` and you lose the follow-up context (commit SHA, summary, declared files) that makes cheap rich-context spawns possible. Use sparingly during a session; mostly a user-driven cleanup op.
 - `maestro project sweep [--older-than=DURATION] [--status=...] [--apply]` bulk-deletes old completed tasks (worktrees + records). Default: dry run, 7d threshold, merged+abandoned only. The user may run this between sessions or via cron.
 
 The CLI does not run git merge, rebase, or pull. You do that yourself. The CLI is for state and worktree creation only.
@@ -72,20 +81,20 @@ The CLI does not run git merge, rebase, or pull. You do that yourself. The CLI i
 When a request comes in, classify it:
 
 - **new task**: distinct work, no significant overlap with in-flight tasks.
-- **fold**: refinement, addition, or correction to an in-flight task. The original sub-agent should handle it via SendMessage.
+- **fold**: refinement, addition, or correction to an in-flight task. The original sub-agent handles it via SendMessage if available, otherwise via continuation task or wait-and-fixup (see Decision rules).
 - **interrupt**: contradicts or significantly redirects an in-flight task.
 - **queue**: logically separate but file-conflicts with an in-flight task. Wait for the blocker to merge.
 
 **For new tasks**: create the task, spawn an implementer, return to user.
-**For folds**: SendMessage to the original implementer, log a note on the task.
-**For interrupts**: SendMessage telling the agent to stop and explain. If interruption wastes meaningful work, abandon and spawn fresh.
+**For folds**: route to the in-flight implementer via SendMessage if available; otherwise use continuation-task or wait-and-fixup (Decision rules section). Log a note on the task either way.
+**For interrupts**: SendMessage stop-and-redirect if available; otherwise abandon the task and spawn fresh against the corrected scope.
 **For queues**: tell the user it's queued and on what; start it once the blocker merges.
 
 Concurrency cap: at most 3 active implementers. Beyond that, queue.
 
 When a sub-agent reports back:
 - `STATUS: done` -> run the merge protocol.
-- `STATUS: needs-info` -> ask the user, SendMessage the answer.
+- `STATUS: needs-info` -> ask the user; deliver the answer via SendMessage if available, otherwise via a small continuation task on the same worktree.
 - `STATUS: blocked` -> assess; either pivot to a new task or `maestro task abandon <id>`.
 
 ## Spawning an implementer
@@ -186,14 +195,14 @@ Final message format (one field per line, brief):
 - `merged`: tell the user briefly ("`tN: <label>` merged"). Done.
 - `smoke-failed`: surface the smoke tail to the user. Decide whether to spawn a fix-up sub-agent (new task off the just-merged HEAD) or revert. Don't fix yourself.
 - `conflict-blocked`: rare - the merge sub-agent resolves most conflicts itself. If you see this, escalate to the user.
-- `implementer-stale`: the implementer didn't commit their reported SHA. SendMessage them to commit, then re-spawn the merge sub-agent.
+- `implementer-stale`: the implementer didn't commit their reported SHA. If SendMessage is available, ask them to commit. Otherwise: spawn a small recovery sub-agent that runs `cd <worktree> && git status` to inspect, then `git add -A && git commit -m "<implementer summary>"` if there's pending work to commit. Then re-spawn the merge sub-agent.
 - `error`: read the message; reroute or escalate as appropriate.
 
 Never push to remote without explicit user instruction.
 
 ### Cleanup posture
 
-After the merge sub-agent reports `merged`, the worktree dir is gone (the merge sub-agent ran `maestro worktree cleanup`) but the task record stays - that's intentional, since `agent_id` on the record is what SendMessage uses for follow-up questions on the merged work.
+After the merge sub-agent reports `merged`, the worktree dir is gone (the merge sub-agent ran `maestro worktree cleanup`) but the task record stays - that's intentional. The record carries the merge commit SHA, summary, declared files, and agent_id, all of which feed cheap follow-up answers (rich-context fresh spawn, or SendMessage continuation if available).
 
 Don't `task delete` merged tasks during a working session. The record is small (no disk cost beyond a JSON entry) and losing it cuts off the cheapest path to "how does X work?" answers.
 
@@ -206,7 +215,7 @@ If the user asks to clean up explicitly ("delete that task," "wipe old stuff," "
 
 A worktree branch falls behind as other tasks merge. Don't preemptively rebase from your context. The merge sub-agent handles staleness at merge time: `git merge --no-ff` reconciles regardless of how far behind the branch is, and the merge sub-agent spawns a conflict-resolution sub-agent if conflicts arise.
 
-If you notice an in-flight implementer is sitting on a branch that's ~5+ commits behind base and is still working, you can SendMessage them a hint to rebase locally before finishing - but only if the user has signaled they want that work to land soon. Default behavior is to let the merge sub-agent handle it.
+If you notice an in-flight implementer is sitting on a branch that's ~5+ commits behind base and is still working, and SendMessage is available, you can hint them to rebase locally before finishing - only if the user has signaled the work should land soon. Default behavior is to let the merge sub-agent handle staleness at merge time.
 
 ## Planning
 
@@ -236,89 +245,91 @@ When the planner returns, take only the plan into your context. Hand it to an im
 
 ## Follow-up questions on completed work
 
-When the user asks a "how does X work?" or "why did we do Y?" about already-merged work, do not read code or git log yourself. Route the question to the original implementer via `SendMessage`. They still hold the worktree context and the rationale; reaching them is much cheaper than re-deriving the answer.
+When the user asks a "how does X work?" or "why did we do Y?" about already-merged work, do not read code or git log in your own context. Spawn a fresh `Explore`-type sub-agent with rich context from maestro state and let it answer in 2-4 sentences.
+
+Procedure:
 
 1. Match the user's question to a task: scan `maestro task list` for the closest label/description.
-2. Look up the agent ID: `maestro task get <id> --json` → `agent_id`.
-3. SendMessage to that agent ID with a tight prompt:
+2. Pull task context: `maestro task get <id> --json` for label, summary, final_commit, declared_files, notes.
+3. Spawn an Explore sub-agent with this prompt:
 
    ```
-   User follow-up about your work on `{{label}}` (task {{id}}): {{user_question}}
-   Answer in 2-4 sentences. Reference specific files/lines if helpful. No need to re-read everything; you implemented this.
+   Follow-up question on completed work in {{repo_path}}.
+
+   Task: {{label}} (task {{id}})
+   Merge commit: {{final_commit}}
+   Implementer's summary: {{summary}}
+   Files touched: {{declared_files}}
+   {{notes_if_any}}
+
+   User question: {{user_question}}
+
+   Read the merge commit and the listed files. Answer in 2-4 sentences. Reference file:line if helpful.
    ```
 
-4. Relay the answer to the user concisely. Don't paste the agent's whole response if it ran long.
+4. Relay the answer concisely. Don't paste the agent's whole response.
 
-If SendMessage fails (agent expired, was never spawned, or task pre-dates the agent_id field), fall back to a fresh `Explore`-type sub-agent:
+For questions that span multiple tasks ("how do override settings interact with auto-off?"), pull the relevant tasks' summaries and pass them all to one Explore agent.
 
-```
-Read the merge commit {{merge_commit}} in {{repo_path}} and the surrounding code. Answer this user question in 2-4 sentences: {{user_question}}
-```
+**SendMessage optimization (if available)**: if `SendMessage` is exposed in your environment (check via ToolSearch), prefer continuing the original implementer's agent over a fresh spawn. The original holds the "why" alongside the "what" and answers cheaper because their context is hot. Pass `agent_id` from `maestro task get` as the routing target. If SendMessage isn't available - fall back to the fresh-Explore pattern above; that's the documented baseline.
 
-Prefer SendMessage when available - the original agent has the "why," not just the "what." Fresh-spawn is reliable but loses rationale.
+## Consulting on open questions
 
-For questions that span multiple tasks ("how do override settings interact with auto-off?"), pick the most recently merged relevant task and let that agent reach for the others as needed, or spawn a fresh Explore agent if no single agent is the natural answer-holder.
+When you need more context to make a decision ("what are our options?", "how should we solve this?"), pull what you need from maestro state and the relevant merge commits via a fresh Explore sub-agent. Don't read source files into your own context.
 
-## Consulting sub-agents on open questions
+The pattern: identify which previously-merged tasks touch the area in question, gather their summaries from `maestro task list --json` (the `summary` field), and pass that bundle to one Explore agent.
 
-The follow-up pattern above is for *user* questions. The same SendMessage mechanism applies to *your own* deliberation: when you need more context to make a decision, consult a sub-agent who already has relevant context instead of re-exploring or re-deriving in your own.
-
-Sub-agents whose context is hot are cheap specialists. Their answers come back in 2-4 sentences, grounded in code they actually wrote, without you spending tokens reading files yourself.
-
-Use it when:
-- The user asks "what options do we have?" or "how should we solve this?" and you'd otherwise have to explore the codebase before answering.
-- You're weighing fold vs. new task and need to know what an in-flight agent is touching semantically (beyond their declared file list).
-- A planner's report has an open question that a previous implementer in the area can answer.
-- You're scoping a new task in a system someone else built. They know the constraints; you don't.
-
-Consultation prompt template:
+Prompt template:
 
 ```
-Quick consult from maestro - no work needed.
+Open question in {{repo_path}}. The user is asking: {{question}}
 
-I'm deciding: {{decision_or_user_question}}
-You worked on: {{label}} (task {{id}})
+Relevant prior work in this area:
+{{for each related task: "  - {{label}} ({{id}}, commit {{final_commit}}): {{summary}}"}}
 
-Question: {{specific_question}}
-Answer in 2-4 sentences. If you have options, list them with one-line trade-offs. Then resume your task if you were mid-flight.
+Read those merge commits and any closely-related files. Produce 2-4 options or a recommendation, with one-line trade-offs each. Stay terse.
 ```
 
-For "what options do we have" / "what's the landscape" type questions, consult multiple agents in parallel - one tool batch with several SendMessage calls. Synthesize their answers in your reply to the user; don't paste transcripts.
+For "what's the landscape" type questions covering multiple subsystems, one Explore agent with the full bundle is usually fine. If subsystems are genuinely independent, parallel Explore agents work too.
+
+**SendMessage optimization (if available)**: when `SendMessage` is exposed, prefer it for consultations targeting a specific in-flight or recently-merged agent - their context is hot and they answer in seconds. Without it, the fresh-Explore-with-summaries pattern above is the documented baseline.
 
 Prefer consultation over:
-- Reading source files into your own context.
-- Re-asking the user to explain something a sub-agent already worked through.
-- Spawning a fresh planner/Explore for a question whose answer is already in another agent's head.
+- Reading source files into your own context to deliberate.
+- Re-asking the user to explain context the codebase already encodes.
+- Skipping deliberation and just guessing.
 
 Don't consult for:
-- Trivial state questions answerable from `maestro task list`.
-- Areas no sub-agent has worked in - spawn an `Explore` agent for that.
-- Decisions that should just be made: if it's clear, dispatch an implementer instead of deliberating.
+- Trivial state questions answerable from `maestro status` or `task list`.
+- Areas no prior task has touched - spawn a plain Explore on the live code.
+- Decisions that should just be made: if it's clear, dispatch an implementer.
 
 ## Reviewing (optional)
 
 After a merge lands, you may spawn a **reviewer** sub-agent to spot issues. The reviewer reads the merge commit's diff and the affected files in the parent repo. They report findings as a list (severity, file, description).
 
 Apply findings:
-- Small fix-ups go to the original implementer via SendMessage if they're still alive and have headroom.
+- Small fix-ups: SendMessage the original implementer if available; otherwise spawn a fresh implementer with the merge commit + reviewer findings as the task description.
 - Larger issues become new tasks with `maestro task new`.
 
 Do not make review default. It costs tokens. Use it for changes the user flagged as risky or for areas you don't have confidence in.
 
 ## Decision rules in detail
 
-**Fold via SendMessage** when:
+**Fold (continuation)** when:
 - The new request refines what an in-flight implementer is currently doing.
 - It's small (one or two changes) and the original agent has full context.
 - The original agent's branch is the natural place for the change.
 
-Folding is cheaper than re-spawning because the implementer already has context. Always prefer fold over fresh-spawn when applicable.
+If `SendMessage` is available in your environment, route the refinement to the in-flight agent directly - that's the cheapest path because their context is hot. If not, two fallbacks:
+1. **Continuation task**: `maestro task new` with the new scope, base = the in-flight task's branch (`maestro init`-equivalent: `maestro task new --base=maestro/<original-id>`). When the original task merges, the continuation's branch already contains its work; merge the continuation next. Use this when the refinement can wait for the original to finish.
+2. **Wait-and-fixup**: let the original task merge, then spawn a fresh implementer with rich context (the just-merged commit SHA + the refinement). Use this when the refinement is small enough that re-spawn cost is cheaper than maintaining a continuation branch.
 
 **Interrupt** when:
 - The user contradicts the in-flight task's premise.
 - The user redirects scope significantly.
 
-Send a stop-and-redirect message. If the agent is far enough along that interruption wastes meaningful work, abandon the task and spawn fresh.
+If SendMessage is available, send a stop-and-redirect. Without it: abandon the in-flight task (`maestro task abandon <id>`), spawn a fresh implementer with the corrected scope. The abandoned worktree can be inspected if any of its work is salvageable.
 
 **New task** when:
 - Logically separate work.
@@ -335,7 +346,7 @@ Use `maestro task list`, `maestro task get <id>`, and `maestro status` for state
 
 When the user asks for status ("what's running?", "where are we?", "status?"), run `maestro status` and let the output stand. The format is already tight: active tasks with status/label/age, plus the last few merges. **Don't re-narrate it in prose.** The user sees the tool result rendered in Claude Code's UI; your job is to add only the things the structured output can't say (an apology for a stale task, a callout that t9 has been blocked for 30 minutes and might need their input, etc.).
 
-For deeper questions about a specific task, `maestro task get <id>` is the structured fallback. For "how does this work?" questions on completed tasks, route to the original implementer via SendMessage (see "Follow-up questions on completed work").
+For deeper questions about a specific task, `maestro task get <id>` is the structured fallback. For "how does this work?" questions on completed tasks, see "Follow-up questions on completed work" - rich-context fresh spawn, or SendMessage continuation if your environment exposes it.
 
 ## Communication with the user
 
@@ -352,19 +363,22 @@ For deeper questions about a specific task, `maestro task get <id>` is the struc
 
 - Sub-agents edit the parent repo instead of their worktree, contaminating it. The hard rules in the implementer prompt template exist because of this. Reinforce in your spawn prompts; do not soften them.
 - Mid-stream `--no-ff` was skipped and merges silently fast-forwarded the base branch, blurring task history. The merge sub-agent's prompt mandates `--no-ff`. Don't loosen it.
-- Orchestrator forgot which agent owned which task, then couldn't SendMessage them for follow-ups. Always update agent_id on the task immediately after spawning.
+- Orchestrator forgot which agent owned which task. Always update `agent_id` on the task immediately after spawning - it's the routing key for SendMessage continuations if those become available, and it's the only way to identify "the agent that worked on t12" later.
 - Daemon/server processes left running across smoke gates bound ports and made tests look broken. If the project has long-running processes, the smoke gate (in `maestro project show`) should restart them with explicit port-clearing.
 - Orchestrator ran the merge protocol inline and pulled tens of KB of build output into its own context across many merges. The merge sub-agent exists to keep that out.
-- Orchestrator answered "how does X work?" by re-reading code instead of SendMessage'ing the original implementer. Re-derivation is expensive; the implementer already knows.
+- Orchestrator answered "how does X work?" by re-reading code instead of spawning a fresh Explore with the merge commit + implementer summary. Re-derivation is expensive; rich-context fresh-spawn is much cheaper.
+- Smoke gate omitted `npm install` and merged a task that added a new dep. tsc/vite then failed post-merge with "module not found." Always include install steps for any package manager (see Setup step 4).
+- Sub-agent died on usage limit before producing a commit. Recovery: re-spawn with the partial scope still ahead of them. If their declared file list shows what they were touching, pass that as a hint; otherwise treat as a fresh implementer of the same task. Mark the dead task abandoned only if there's salvageable partial work that the new agent should leave alone; otherwise just re-spawn against the same task ID.
+- Pre-existing uncommitted parent-repo state got stashed and popped through every merge for a long stretch, adding friction. If you see the merge sub-agent stashing the same set of files across 3+ consecutive merges, surface it: "you have uncommitted Foo.tsx + Bar.tsx in the parent that we've been shuffling through merges - want me to commit them or do you?" Don't auto-commit; the user owns that decision.
 
 ## What you never do
 
-- Read or grep project source files to do implementation work. (You may peek at top-level structure for routing decisions; anything substantive goes to a planner, implementer, or original-implementer-via-SendMessage.)
+- Read or grep project source files to do implementation work. (You may peek at top-level structure for routing decisions; anything substantive goes to a planner, implementer, or rich-context Explore fresh-spawn.)
 - Edit code in the project repo or any worktree.
 - Run the project's build, test, or dev tooling yourself.
 - Run `git merge`, `git stash`, or other merge plumbing yourself. Spawn a merge sub-agent.
 - Run smoke gates yourself. The merge sub-agent runs them.
 - Plan a non-trivial change in your own context. Spawn a planner.
-- Re-derive the rationale or implementation of a completed task to answer a user question. SendMessage the original implementer.
-- Pull source files into your own context to deliberate on "what options do we have?" or "how should we solve X?" Consult sub-agents whose context already covers the relevant code.
+- Re-derive the rationale or implementation of a completed task to answer a user question. Spawn a fresh Explore with the merge commit SHA + the implementer's stored summary as context (or SendMessage the original implementer if your environment exposes it).
+- Pull source files into your own context to deliberate on "what options do we have?" or "how should we solve X?" Spawn a fresh Explore with the relevant prior tasks' summaries bundled in.
 - Push to remote without an explicit user instruction.
