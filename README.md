@@ -109,6 +109,7 @@ State lives at `~/.maestro/<project>/state.json`. Worktrees at `~/.maestro/<proj
 
 ## Commands
 
+Project lifecycle:
 ```
 maestro init --repo=<path> [--base=<branch>] [--smoke-gate="..."] [--force]
 maestro project list
@@ -116,28 +117,63 @@ maestro project show
 maestro project find --repo=<path>
 maestro project update [--smoke-gate=...] [--default-base=...] [--clear-smoke-gate]
 maestro project rename --to=<name>
-maestro task new --description="..." [--label="..."] [--base=<branch>]
+maestro project sweep [--older-than=7d] [--status=abandoned] [--include-merged] [--apply]
+```
+
+Tasks:
+```
+maestro task new --description="..." [--label="..."] [--tags=a,b] [--session=<id>] [--prompt-stdin | --prompt-file=<path>]
+maestro task get-prompt <id>
 maestro task list [--status=active|pending|in_progress|...]
 maestro task get <id> [--json]
-maestro task update <id> [--status=...] [--agent-id=...] [--label=...] [--note=...] [--summary=...] [--commit=...]
+maestro task update <id> [--status=] [--agent-id=] [--label=] [--note=] [--note-content-stdin --note-source= --note-type=] [--add-tags=] [--remove-tags=] [--summary=] [--commit=]
 maestro task files <id> [--add=a,b] [--remove=a,b] [--set=a,b]
 maestro task done <id> [--summary=...] [--commit=...]
 maestro task abandon <id> [--note=...]
 maestro task delete <id> [--keep-worktree] [--force]
+```
+
+Sessions and history:
+```
+maestro session start [--name=...]
+maestro session list [--include-condensed]
+maestro session get <id>
+maestro session current
+maestro session pending-condense <id>
+maestro session condense <id> --apply --summary-stdin
+maestro tag list [--with-counts]
+maestro tag rename --from=<old> --to=<new>
+maestro search [--text=] [--tag=a,b] [--session=] [--status=] [--since=] [--until=] [--limit=20] [--full]
+```
+
+Coordination and display:
+```
 maestro conflicts <id>
 maestro worktree path <id>
 maestro worktree cleanup <id> [--force]
 maestro worktree restore <id>
-maestro project sweep [--older-than=7d] [--status=merged,abandoned] [--apply] [--keep-worktrees]
 maestro statusline [--project=<name>] [--no-project-name]
 maestro status [--project=<name>] [--last-merged=N]
 ```
 
-`worktree cleanup` removes the directory but keeps the task record so SendMessage to the original sub-agent still works for follow-up questions. `task delete` removes the record entirely (and the worktree by default). `project sweep` is the bulk version, dry-run by default; suitable for cron or a between-sessions tidy-up.
-
-`project find` is how the orchestrator notices it's been in a repo before. `project rename` requires no active worktrees (worktree paths are absolute and would break). For milestones / phase boundaries, just `maestro init` a new project name pointing at the same repo - multiple projects per repo is supported.
+Notes:
+- `worktree cleanup` removes the directory but keeps the task record (carries summary/commit/agent_id for follow-up questions). `task delete` removes the record entirely (rare during sessions; loses history).
+- `project sweep` defaults to abandoned tasks only - merged tasks are kept as durable history; condense them via `session condense`. Pass `--include-merged` to override.
+- `project rename` requires no active worktrees (paths are absolute and would break). For milestones, prefer `maestro init` a new project name - multiple projects per repo is supported.
 
 Most commands need a project. Pass `--project=<name>` or set `MAESTRO_PROJECT`. Pass `--json` to most commands for machine-readable output.
+
+## Knowledge store
+
+Tasks in maestro are durable. They outlive the session that created them and accumulate into a searchable record of what was asked, what was done, why, and what was decided. The orchestrator uses this:
+
+- **Search before creating** new tasks (`maestro search --tag=auth` before opening a new auth-related task) - catches prior decisions and constraints without re-deriving from code.
+- **Implementer prompts are stored** via `task new --prompt-stdin`. Sub-agents fetch them with `task get-prompt`. The orchestrator's context never holds the long body twice.
+- **Reports are written by sub-agents** via `task update --note-content-stdin --note-type=report`. The orchestrator reads only what it needs via `task get` or `status`.
+- **Sessions** group related work. Multiple sessions can run concurrently on the same project. At natural boundaries (focus transitions, milestones), the orchestrator proposes `session condense`: it summarizes the session into a single condensed entry and trims each task's verbose fields. Metadata stays so search keeps working; the verbose noise drops.
+- **Tags** emerge organically. `tag list` enumerates them; `tag rename` canonicalizes drift.
+
+The skill's "What you never do" includes: never inline the implementer's full prompt twice; never inline a sub-agent's verbose report in your context; never skip `maestro search` before creating a task in an area you've worked in before; never auto-condense without proposing.
 
 ## Status snapshot
 

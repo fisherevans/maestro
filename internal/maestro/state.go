@@ -44,45 +44,73 @@ func (s TaskStatus) IsActive() bool {
 
 // State is the entire on-disk state for a single maestro project.
 type State struct {
-	Project Project   `json:"project"`
-	Tasks   []*Task   `json:"tasks"`
-	Updated time.Time `json:"updated"`
+	Project  Project    `json:"project"`
+	Tasks    []*Task    `json:"tasks"`
+	Sessions []*Session `json:"sessions,omitempty"`
+	Updated  time.Time  `json:"updated"`
 }
 
 // Project holds the config for a maestro project: which repo it tracks,
 // what branch new tasks default to, and the smoke gate to run after merges.
 type Project struct {
-	Name           string `json:"name"`
-	RepoPath       string `json:"repo_path"`
-	DefaultBase    string `json:"default_base"`
-	SmokeGate      string `json:"smoke_gate,omitempty"`
-	NextTaskNumber int    `json:"next_task_number"`
+	Name              string `json:"name"`
+	RepoPath          string `json:"repo_path"`
+	DefaultBase       string `json:"default_base"`
+	SmokeGate         string `json:"smoke_gate,omitempty"`
+	NextTaskNumber    int    `json:"next_task_number"`
+	NextSessionNumber int    `json:"next_session_number,omitempty"`
 }
 
-// Task is one unit of work assigned to a sub-agent.
+// Session groups a set of tasks worked on together. Multiple sessions can
+// run concurrently against the same project (different shells, different
+// agents). When the orchestrator transitions focus or hits a milestone, it
+// proposes a `session condense` which compresses the session's verbose log
+// into Condensed and trims the underlying tasks.
+type Session struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name,omitempty"`
+	StartedAt time.Time `json:"started_at"`
+	EndedAt   time.Time `json:"ended_at,omitempty"`
+	Condensed string    `json:"condensed,omitempty"`
+}
+
+// Task is one unit of work assigned to a sub-agent. Tasks are durable: they
+// outlive the session that created them and serve as a queryable record of
+// what was asked, what was done, and why. Verbose fields (ImplementerPrompt,
+// Notes) are trimmed by `session condense` once the orchestrator has
+// summarized the session into Session.Condensed.
 type Task struct {
-	ID            string     `json:"id"`
-	Label         string     `json:"label,omitempty"`
-	Description   string     `json:"description"`
-	Status        TaskStatus `json:"status"`
-	Branch        string     `json:"branch"`
-	BaseBranch    string     `json:"base_branch"`
-	BaseCommit    string     `json:"base_commit"`
-	WorktreePath  string     `json:"worktree_path"`
-	DeclaredFiles []string   `json:"declared_files"`
-	AgentID       string     `json:"agent_id"`
-	Summary       string     `json:"summary"`
-	FinalCommit   string     `json:"final_commit"`
-	Notes         []Note     `json:"notes"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	ID                string     `json:"id"`
+	Label             string     `json:"label,omitempty"`
+	Description       string     `json:"description"`
+	Status            TaskStatus `json:"status"`
+	Session           string     `json:"session,omitempty"`
+	Tags              []string   `json:"tags,omitempty"`
+	Branch            string     `json:"branch"`
+	BaseBranch        string     `json:"base_branch"`
+	BaseCommit        string     `json:"base_commit"`
+	WorktreePath      string     `json:"worktree_path"`
+	DeclaredFiles     []string   `json:"declared_files"`
+	AgentID           string     `json:"agent_id"`
+	ImplementerPrompt string     `json:"implementer_prompt,omitempty"`
+	Summary           string     `json:"summary"`
+	FinalCommit       string     `json:"final_commit"`
+	Notes             []Note     `json:"notes"`
+	CondensedAt       time.Time  `json:"condensed_at,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
-// Note is a timestamped log entry on a task. Used as a simple audit trail so
-// the orchestrator can recover context after a long session.
+// Note is a timestamped log entry on a task. Type classifies the entry so the
+// log is filterable: report (a sub-agent's final report), exchange (a back-
+// and-forth message), fold (an orchestrator-side refinement injected after
+// spawn), decision (a constraint or call-out worth preserving through
+// condensation), system (CLI-side bookkeeping). Type is optional for
+// backwards compatibility with notes written before this field existed.
 type Note struct {
 	At      time.Time `json:"at"`
 	Source  string    `json:"source"`
+	Type    string    `json:"type,omitempty"`
 	Content string    `json:"content"`
 }
 
@@ -212,6 +240,123 @@ func (st *State) AllocTaskID() string {
 	return id
 }
 
+// AllocSessionID hands out the next session ID. Format "s<N>".
+func (st *State) AllocSessionID() string {
+	if st.Project.NextSessionNumber < 1 {
+		st.Project.NextSessionNumber = 1
+	}
+	id := "s" + strconv.Itoa(st.Project.NextSessionNumber)
+	st.Project.NextSessionNumber++
+	return id
+}
+
+// FindSession returns the session with the given ID or nil.
+func (st *State) FindSession(id string) *Session {
+	for _, s := range st.Sessions {
+		if s.ID == id {
+			return s
+		}
+	}
+	return nil
+}
+
+// TasksInSession returns tasks belonging to the given session, in creation order.
+func (st *State) TasksInSession(id string) []*Task {
+	var out []*Task
+	for _, t := range st.Tasks {
+		if t.Session == id {
+			out = append(out, t)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out
+}
+
+// AllTags returns a map of tag → number of tasks using it across the project.
+func (st *State) AllTags() map[string]int {
+	counts := make(map[string]int)
+	for _, t := range st.Tasks {
+		for _, tag := range t.Tags {
+			counts[tag]++
+		}
+	}
+	return counts
+}
+
+// SearchQuery is the input to State.SearchTasks. All criteria are AND'd; an
+// empty/zero value matches every task. Tags is OR'd within itself (any-of).
+type SearchQuery struct {
+	Text     string       // case-insensitive substring match against Label/Description/Summary
+	Tags     []string     // any-of: matches if the task has at least one of these tags
+	Session  string       // exact match on Task.Session
+	Statuses []TaskStatus // any-of
+	Since    time.Time    // include tasks with UpdatedAt >= Since (zero = no lower bound)
+	Until    time.Time    // include tasks with UpdatedAt <= Until (zero = no upper bound)
+	Limit    int          // 0 = no limit
+}
+
+// SearchTasks returns tasks matching the query, sorted by UpdatedAt descending.
+func (st *State) SearchTasks(q SearchQuery) []*Task {
+	text := strings.ToLower(strings.TrimSpace(q.Text))
+	tagSet := make(map[string]bool, len(q.Tags))
+	for _, t := range q.Tags {
+		t = strings.TrimSpace(t)
+		if t != "" {
+			tagSet[t] = true
+		}
+	}
+	statusSet := make(map[TaskStatus]bool, len(q.Statuses))
+	for _, s := range q.Statuses {
+		statusSet[s] = true
+	}
+
+	var out []*Task
+	for _, t := range st.Tasks {
+		if text != "" {
+			hit := strings.Contains(strings.ToLower(t.Label), text) ||
+				strings.Contains(strings.ToLower(t.Description), text) ||
+				strings.Contains(strings.ToLower(t.Summary), text)
+			if !hit {
+				continue
+			}
+		}
+		if len(tagSet) > 0 {
+			matched := false
+			for _, tag := range t.Tags {
+				if tagSet[tag] {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
+		if q.Session != "" && t.Session != q.Session {
+			continue
+		}
+		if len(statusSet) > 0 && !statusSet[t.Status] {
+			continue
+		}
+		if !q.Since.IsZero() && t.UpdatedAt.Before(q.Since) {
+			continue
+		}
+		if !q.Until.IsZero() && t.UpdatedAt.After(q.Until) {
+			continue
+		}
+		out = append(out, t)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].UpdatedAt.After(out[j].UpdatedAt)
+	})
+	if q.Limit > 0 && len(out) > q.Limit {
+		out = out[:q.Limit]
+	}
+	return out
+}
+
 // ConflictingTasks returns active tasks (other than excludeID) whose declared
 // file lists overlap with the supplied files.
 func (st *State) ConflictingTasks(excludeID string, files []string) []*Task {
@@ -258,14 +403,125 @@ func (st *State) SortedTasks() []*Task {
 	return out
 }
 
-// AddNote appends an audit-trail note to a task and bumps UpdatedAt.
+// AddNote appends an audit-trail note (no Type) to a task and bumps UpdatedAt.
+// For typed entries (report, exchange, fold, decision), use AddTypedNote.
 func (t *Task) AddNote(source, content string) {
+	t.AddTypedNote(source, "", content)
+}
+
+// AddTypedNote appends a note with an explicit Type field. Type is intended
+// for filtering during search and condensation: report (sub-agent's final
+// report), exchange (back-and-forth), fold (orchestrator-side refinement),
+// decision (constraint or call-out worth keeping past condensation), system.
+func (t *Task) AddTypedNote(source, noteType, content string) {
 	t.Notes = append(t.Notes, Note{
 		At:      time.Now(),
 		Source:  source,
+		Type:    noteType,
 		Content: content,
 	})
 	t.UpdatedAt = time.Now()
+}
+
+// AddTags adds tags to the task, deduplicating.
+func (t *Task) AddTags(tags []string) {
+	have := make(map[string]bool, len(t.Tags))
+	for _, tag := range t.Tags {
+		have[tag] = true
+	}
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" || have[tag] {
+			continue
+		}
+		have[tag] = true
+		t.Tags = append(t.Tags, tag)
+	}
+	sort.Strings(t.Tags)
+	t.UpdatedAt = time.Now()
+}
+
+// RemoveTags drops the supplied tags from the task.
+func (t *Task) RemoveTags(tags []string) {
+	drop := make(map[string]bool, len(tags))
+	for _, tag := range tags {
+		drop[strings.TrimSpace(tag)] = true
+	}
+	kept := t.Tags[:0]
+	for _, tag := range t.Tags {
+		if !drop[tag] {
+			kept = append(kept, tag)
+		}
+	}
+	t.Tags = kept
+	t.UpdatedAt = time.Now()
+}
+
+// Condense trims the task's verbose fields after its session has been
+// summarized into Session.Condensed. ImplementerPrompt is dropped, Notes
+// are filtered: Type=decision keeps full content, Type=report keeps the
+// first 200 chars (a sentence or two), all other types are dropped. The
+// task's metadata (Label, Description, Summary, FinalCommit, Tags,
+// DeclaredFiles) is preserved so search and history queries still work.
+func (t *Task) Condense() {
+	t.ImplementerPrompt = ""
+	var kept []Note
+	for _, n := range t.Notes {
+		switch n.Type {
+		case "decision":
+			kept = append(kept, n)
+		case "report":
+			n.Content = truncate(n.Content, 200)
+			kept = append(kept, n)
+		}
+	}
+	t.Notes = kept
+	t.CondensedAt = time.Now()
+	t.UpdatedAt = time.Now()
+}
+
+// RenameTagAcrossTasks rewrites every occurrence of `from` to `to` in tag
+// lists across all tasks. Useful for canonicalizing drift (auth-flow → auth).
+// Returns the number of tasks changed.
+func (st *State) RenameTagAcrossTasks(from, to string) int {
+	from = strings.TrimSpace(from)
+	to = strings.TrimSpace(to)
+	if from == "" || to == "" || from == to {
+		return 0
+	}
+	changed := 0
+	for _, t := range st.Tasks {
+		hit := false
+		for i, tag := range t.Tags {
+			if tag == from {
+				t.Tags[i] = to
+				hit = true
+			}
+		}
+		if !hit {
+			continue
+		}
+		seen := make(map[string]bool, len(t.Tags))
+		deduped := t.Tags[:0]
+		for _, tag := range t.Tags {
+			if !seen[tag] {
+				seen[tag] = true
+				deduped = append(deduped, tag)
+			}
+		}
+		t.Tags = deduped
+		sort.Strings(t.Tags)
+		t.UpdatedAt = time.Now()
+		changed++
+	}
+	return changed
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 // MergeFiles adds the supplied paths to the declared file set, deduplicating.

@@ -54,6 +54,17 @@ Display:
   statusline                 One-line task summary, suitable for a Claude Code statusLine
   status                     Multi-line snapshot: active tasks + recently merged
 
+Sessions and history:
+  session start              Start a session (returns ID; export MAESTRO_SESSION)
+  session list               List sessions (active + condensed)
+  session get <id>           Show session metadata + tasks in it
+  session current            Print MAESTRO_SESSION or "no current"
+  session pending-condense <id>   Dump tasks-in-session for orchestrator summarization
+  session condense <id>      Apply a condensed summary; trim verbose fields
+  tag list                   Enumerate all tags in use, with counts
+  tag rename --from --to     Bulk-rename a tag across the project
+  search                     Query tasks by text/tag/session/since/until/status
+
 Project scope:
   Most commands need a project. Pass --project=<name> or set MAESTRO_PROJECT.
 
@@ -94,6 +105,12 @@ func run(args []string) error {
 		return cmdStatusline(rest)
 	case "status":
 		return cmdStatus(rest)
+	case "session":
+		return cmdSession(rest)
+	case "tag":
+		return cmdTag(rest)
+	case "search":
+		return cmdSearch(rest)
 	default:
 		return fmt.Errorf("unknown command %q (run `maestro` for usage)", cmd)
 	}
@@ -374,9 +391,10 @@ func cmdProjectSweep(args []string) error {
 	fs := flag.NewFlagSet("project sweep", flag.ContinueOnError)
 	project := fs.String("project", "", "project name")
 	olderThan := fs.String("older-than", "7d", "tasks last updated longer ago than this are eligible (e.g. 24h, 7d, 30d)")
-	statusFilter := fs.String("status", "merged,abandoned", "comma-separated statuses to consider eligible")
+	statusFilter := fs.String("status", "abandoned", "comma-separated statuses to consider eligible (default: abandoned only - merged tasks are kept as durable history; use `session condense` to summarize them)")
 	apply := fs.Bool("apply", false, "actually delete; without --apply this is a dry run")
 	keepWT := fs.Bool("keep-worktrees", false, "delete records but leave worktree directories on disk")
+	includeMerged := fs.Bool("include-merged", false, "allow `--status` to target merged tasks (destructive: removes durable history)")
 	asJSON := fs.Bool("json", false, "JSON output")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -396,6 +414,9 @@ func cmdProjectSweep(args []string) error {
 			statuses[maestro.TaskStatus(s)] = true
 		}
 	}
+	if statuses[maestro.StatusMerged] && !*includeMerged {
+		return errors.New("`--status` includes merged but `--include-merged` was not set. Merged tasks are kept as durable history; condense them via `maestro session condense` instead, or pass `--include-merged` to override")
+	}
 	deadline := time.Now().Add(-cutoff)
 	var eligible []*maestro.Task
 	for _, t := range st.Tasks {
@@ -406,6 +427,15 @@ func cmdProjectSweep(args []string) error {
 			continue
 		}
 		eligible = append(eligible, t)
+	}
+
+	// Deprecation hint: surface uncondensed merged tasks so the user knows
+	// where the durable history lives that this sweep is NOT touching.
+	uncondensedMerged := 0
+	for _, t := range st.Tasks {
+		if t.Status == maestro.StatusMerged && t.CondensedAt.IsZero() {
+			uncondensedMerged++
+		}
 	}
 
 	if *asJSON {
@@ -430,6 +460,9 @@ func cmdProjectSweep(args []string) error {
 	} else {
 		if !*apply {
 			fmt.Println("dry run; pass --apply to actually delete")
+		}
+		if uncondensedMerged > 0 && !*includeMerged {
+			fmt.Printf("note: %d merged task(s) preserved as durable history; condense via `maestro session condense <id>` instead of deleting\n", uncondensedMerged)
 		}
 		if len(eligible) == 0 {
 			fmt.Println("(nothing to sweep)")
@@ -516,7 +549,7 @@ func cmdProjectRename(args []string) error {
 
 func cmdTask(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: maestro task <new|list|get|update|files|done|abandon|delete>")
+		return errors.New("usage: maestro task <new|list|get|get-prompt|update|files|done|abandon|delete>")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -526,6 +559,8 @@ func cmdTask(args []string) error {
 		return cmdTaskList(rest)
 	case "get":
 		return cmdTaskGet(rest)
+	case "get-prompt":
+		return cmdTaskGetPrompt(rest)
 	case "update":
 		return cmdTaskUpdate(rest)
 	case "files":
@@ -544,15 +579,27 @@ func cmdTask(args []string) error {
 func cmdTaskNew(args []string) error {
 	fs := flag.NewFlagSet("task new", flag.ContinueOnError)
 	project := fs.String("project", "", "project name")
-	desc := fs.String("description", "", "task description (required)")
+	desc := fs.String("description", "", "task description (required, the short ask)")
 	label := fs.String("label", "", "short human-readable label, e.g. 'long press in player' (recommended)")
 	base := fs.String("base", "", "base branch (default: project default_base)")
+	tags := fs.String("tags", "", "comma-separated tags")
+	session := fs.String("session", "", "session ID (defaults to MAESTRO_SESSION env)")
+	promptStdin := fs.Bool("prompt-stdin", false, "read full implementer prompt body from stdin")
+	promptFile := fs.String("prompt-file", "", "read full implementer prompt body from a file")
 	asJSON := fs.Bool("json", false, "JSON output")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if strings.TrimSpace(*desc) == "" {
 		return errors.New("--description is required")
+	}
+	prompt, err := resolvePromptInput(*promptStdin, *promptFile)
+	if err != nil {
+		return err
+	}
+	sessionID := *session
+	if sessionID == "" {
+		sessionID = os.Getenv("MAESTRO_SESSION")
 	}
 	store, st, err := loadState(*project)
 	if err != nil {
@@ -583,16 +630,21 @@ func cmdTaskNew(args []string) error {
 
 	now := time.Now()
 	t := &maestro.Task{
-		ID:           id,
-		Label:        strings.TrimSpace(*label),
-		Description:  strings.TrimSpace(*desc),
-		Status:       maestro.StatusPending,
-		Branch:       branch,
-		BaseBranch:   baseBranch,
-		BaseCommit:   baseSHA,
-		WorktreePath: wt,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		ID:                id,
+		Label:             strings.TrimSpace(*label),
+		Description:       strings.TrimSpace(*desc),
+		Status:            maestro.StatusPending,
+		Session:           sessionID,
+		Branch:            branch,
+		BaseBranch:        baseBranch,
+		BaseCommit:        baseSHA,
+		WorktreePath:      wt,
+		ImplementerPrompt: prompt,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+	if *tags != "" {
+		t.AddTags(splitList(*tags))
 	}
 	st.Tasks = append(st.Tasks, t)
 	if err := store.Save(st); err != nil {
@@ -681,13 +733,46 @@ func cmdTaskGet(args []string) error {
 	return printTask(os.Stdout, t, *asJSON)
 }
 
+// cmdTaskGetPrompt prints just the ImplementerPrompt for a task. Sub-agents
+// run this as their first action to fetch their full task body, so the
+// orchestrator never has to inline the prompt twice (once via task new, once
+// via the Agent tool prompt).
+func cmdTaskGetPrompt(args []string) error {
+	fs := flag.NewFlagSet("task get-prompt", flag.ContinueOnError)
+	project := fs.String("project", "", "project name")
+	id, err := parseFlagsWithID(fs, args)
+	if err != nil {
+		return err
+	}
+	_, st, err := loadState(*project)
+	if err != nil {
+		return err
+	}
+	t := st.FindTask(id)
+	if t == nil {
+		return fmt.Errorf("task %s not found", id)
+	}
+	if t.ImplementerPrompt == "" {
+		return fmt.Errorf("task %s has no stored implementer prompt (was it created without --prompt-stdin/--prompt-file?)", id)
+	}
+	fmt.Print(t.ImplementerPrompt)
+	if !strings.HasSuffix(t.ImplementerPrompt, "\n") {
+		fmt.Println()
+	}
+	return nil
+}
+
 func cmdTaskUpdate(args []string) error {
 	fs := flag.NewFlagSet("task update", flag.ContinueOnError)
 	project := fs.String("project", "", "project name")
 	status := fs.String("status", "", "new status")
 	agentID := fs.String("agent-id", "", "agent ID for SendMessage routing")
-	note := fs.String("note", "", "append a note (audit trail)")
-	noteSrc := fs.String("note-source", "orchestrator", "note source label (orchestrator|agent|user)")
+	note := fs.String("note", "", "append a one-line note (no Type)")
+	noteSrc := fs.String("note-source", "orchestrator", "note source label (orchestrator|agent|user|system)")
+	noteType := fs.String("note-type", "", "note Type (report|exchange|fold|decision|system); used with --note or --note-content-stdin")
+	noteStdin := fs.Bool("note-content-stdin", false, "read note content from stdin (use with --note-type and --note-source for typed log entries)")
+	addTags := fs.String("add-tags", "", "comma-separated tags to add")
+	removeTags := fs.String("remove-tags", "", "comma-separated tags to remove")
 	label := fs.String("label", "", "short human-readable label")
 	summary := fs.String("summary", "", "update task summary")
 	commit := fs.String("commit", "", "update final commit SHA")
@@ -725,7 +810,23 @@ func cmdTaskUpdate(args []string) error {
 		t.UpdatedAt = time.Now()
 	}
 	if *note != "" {
-		t.AddNote(*noteSrc, *note)
+		t.AddTypedNote(*noteSrc, *noteType, *note)
+	}
+	if *noteStdin {
+		body, err := readStdin()
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(body) == "" {
+			return errors.New("--note-content-stdin: stdin was empty")
+		}
+		t.AddTypedNote(*noteSrc, *noteType, body)
+	}
+	if *addTags != "" {
+		t.AddTags(splitList(*addTags))
+	}
+	if *removeTags != "" {
+		t.RemoveTags(splitList(*removeTags))
 	}
 	if err := store.Save(st); err != nil {
 		return err
@@ -1263,7 +1364,542 @@ func resolveStatuslineProject(flagVal string) string {
 	return matches[0].Name
 }
 
+// ---- session ----
+
+func cmdSession(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: maestro session <start|list|get|current|pending-condense|condense>")
+	}
+	sub, rest := args[0], args[1:]
+	switch sub {
+	case "start":
+		return cmdSessionStart(rest)
+	case "list":
+		return cmdSessionList(rest)
+	case "get":
+		return cmdSessionGet(rest)
+	case "current":
+		return cmdSessionCurrent(rest)
+	case "pending-condense":
+		return cmdSessionPendingCondense(rest)
+	case "condense":
+		return cmdSessionCondense(rest)
+	default:
+		return fmt.Errorf("unknown subcommand: session %s", sub)
+	}
+}
+
+func cmdSessionStart(args []string) error {
+	fs := flag.NewFlagSet("session start", flag.ContinueOnError)
+	project := fs.String("project", "", "project name")
+	name := fs.String("name", "", "human-readable session name (recommended)")
+	asJSON := fs.Bool("json", false, "JSON output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	store, st, err := loadState(*project)
+	if err != nil {
+		return err
+	}
+	id := st.AllocSessionID()
+	s := &maestro.Session{
+		ID:        id,
+		Name:      strings.TrimSpace(*name),
+		StartedAt: time.Now(),
+	}
+	st.Sessions = append(st.Sessions, s)
+	if err := store.Save(st); err != nil {
+		return err
+	}
+	if *asJSON {
+		return writeJSON(os.Stdout, s)
+	}
+	printSession(os.Stdout, s, false)
+	fmt.Println()
+	fmt.Printf("export MAESTRO_SESSION=%s\n", id)
+	return nil
+}
+
+func cmdSessionList(args []string) error {
+	fs := flag.NewFlagSet("session list", flag.ContinueOnError)
+	project := fs.String("project", "", "project name")
+	includeCondensed := fs.Bool("include-condensed", true, "include sessions that have been condensed (default true)")
+	asJSON := fs.Bool("json", false, "JSON output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	_, st, err := loadState(*project)
+	if err != nil {
+		return err
+	}
+	out := make([]*maestro.Session, 0, len(st.Sessions))
+	for _, s := range st.Sessions {
+		if !*includeCondensed && !s.EndedAt.IsZero() {
+			continue
+		}
+		out = append(out, s)
+	}
+	if *asJSON {
+		return writeJSON(os.Stdout, out)
+	}
+	if len(out) == 0 {
+		fmt.Println("(no sessions)")
+		return nil
+	}
+	for _, s := range out {
+		state := "active"
+		if !s.EndedAt.IsZero() {
+			state = "condensed"
+		}
+		name := s.Name
+		if name == "" {
+			name = "(unnamed)"
+		}
+		fmt.Printf("%s  %-9s  %s  (started %s)\n", s.ID, state, name, s.StartedAt.Format(time.RFC3339))
+	}
+	return nil
+}
+
+func cmdSessionGet(args []string) error {
+	fs := flag.NewFlagSet("session get", flag.ContinueOnError)
+	project := fs.String("project", "", "project name")
+	asJSON := fs.Bool("json", false, "JSON output")
+	id, err := parseFlagsWithID(fs, args)
+	if err != nil {
+		return err
+	}
+	_, st, err := loadState(*project)
+	if err != nil {
+		return err
+	}
+	s := st.FindSession(id)
+	if s == nil {
+		return fmt.Errorf("session %s not found", id)
+	}
+	tasks := st.TasksInSession(id)
+	if *asJSON {
+		return writeJSON(os.Stdout, map[string]any{
+			"session": s,
+			"tasks":   tasks,
+		})
+	}
+	printSession(os.Stdout, s, true)
+	fmt.Println()
+	if len(tasks) == 0 {
+		fmt.Println("(no tasks in this session)")
+		return nil
+	}
+	fmt.Printf("Tasks (%d):\n", len(tasks))
+	for _, t := range tasks {
+		fmt.Printf("  %-4s %-16s %s\n", t.ID, t.Status, taskListLabel(t))
+	}
+	return nil
+}
+
+func cmdSessionCurrent(args []string) error {
+	fs := flag.NewFlagSet("session current", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cur := os.Getenv("MAESTRO_SESSION")
+	if cur == "" {
+		fmt.Println("(no current session)")
+		return nil
+	}
+	fmt.Println(cur)
+	return nil
+}
+
+// cmdSessionPendingCondense dumps the data the orchestrator needs to write a
+// condensed summary: each task's label, summary, tags, file list, and any
+// notes typed `report` or `decision`. The orchestrator reads this output,
+// composes a session-level summary, and feeds it back via session condense
+// --apply --summary-stdin.
+func cmdSessionPendingCondense(args []string) error {
+	fs := flag.NewFlagSet("session pending-condense", flag.ContinueOnError)
+	project := fs.String("project", "", "project name")
+	asJSON := fs.Bool("json", false, "JSON output")
+	id, err := parseFlagsWithID(fs, args)
+	if err != nil {
+		return err
+	}
+	_, st, err := loadState(*project)
+	if err != nil {
+		return err
+	}
+	s := st.FindSession(id)
+	if s == nil {
+		return fmt.Errorf("session %s not found", id)
+	}
+	if !s.EndedAt.IsZero() {
+		return fmt.Errorf("session %s is already condensed", id)
+	}
+	tasks := st.TasksInSession(id)
+	type filteredTask struct {
+		ID          string         `json:"id"`
+		Label       string         `json:"label,omitempty"`
+		Description string         `json:"description"`
+		Status      string         `json:"status"`
+		Tags        []string       `json:"tags,omitempty"`
+		Summary     string         `json:"summary,omitempty"`
+		Files       []string       `json:"files,omitempty"`
+		FinalCommit string         `json:"final_commit,omitempty"`
+		KeyNotes    []maestro.Note `json:"key_notes,omitempty"`
+	}
+	out := make([]filteredTask, 0, len(tasks))
+	for _, t := range tasks {
+		ft := filteredTask{
+			ID:          t.ID,
+			Label:       t.Label,
+			Description: t.Description,
+			Status:      string(t.Status),
+			Tags:        t.Tags,
+			Summary:     t.Summary,
+			Files:       t.DeclaredFiles,
+			FinalCommit: t.FinalCommit,
+		}
+		for _, n := range t.Notes {
+			if n.Type == "report" || n.Type == "decision" {
+				ft.KeyNotes = append(ft.KeyNotes, n)
+			}
+		}
+		out = append(out, ft)
+	}
+	if *asJSON {
+		return writeJSON(os.Stdout, map[string]any{
+			"session": s,
+			"tasks":   out,
+		})
+	}
+	// Default human output is markdown-ish so the orchestrator can copy
+	// straight into its summarization prompt.
+	fmt.Printf("# Session: %s", s.ID)
+	if s.Name != "" {
+		fmt.Printf(" (%s)", s.Name)
+	}
+	fmt.Println()
+	fmt.Printf("Started: %s\n", s.StartedAt.Format(time.RFC3339))
+	fmt.Println()
+	for _, t := range out {
+		fmt.Printf("## %s: %s\n", t.ID, t.Label)
+		fmt.Printf("Status: %s\n", t.Status)
+		if len(t.Tags) > 0 {
+			fmt.Printf("Tags: %s\n", strings.Join(t.Tags, ", "))
+		}
+		fmt.Printf("Description: %s\n", t.Description)
+		if t.Summary != "" {
+			fmt.Printf("Summary: %s\n", t.Summary)
+		}
+		if t.FinalCommit != "" {
+			fmt.Printf("Final commit: %s\n", t.FinalCommit)
+		}
+		if len(t.Files) > 0 {
+			fmt.Printf("Files: %s\n", strings.Join(t.Files, ", "))
+		}
+		for _, n := range t.KeyNotes {
+			fmt.Printf("- [%s/%s] %s\n", n.Source, n.Type, summarizeOneLine(n.Content))
+		}
+		fmt.Println()
+	}
+	return nil
+}
+
+func cmdSessionCondense(args []string) error {
+	fs := flag.NewFlagSet("session condense", flag.ContinueOnError)
+	project := fs.String("project", "", "project name")
+	summaryStdin := fs.Bool("summary-stdin", false, "read condensed summary from stdin")
+	summaryFile := fs.String("summary-file", "", "read condensed summary from a file")
+	apply := fs.Bool("apply", false, "actually condense; without this flag the command is a dry run")
+	asJSON := fs.Bool("json", false, "JSON output")
+	id, err := parseFlagsWithID(fs, args)
+	if err != nil {
+		return err
+	}
+	store, st, err := loadState(*project)
+	if err != nil {
+		return err
+	}
+	s := st.FindSession(id)
+	if s == nil {
+		return fmt.Errorf("session %s not found", id)
+	}
+	if !s.EndedAt.IsZero() {
+		return fmt.Errorf("session %s is already condensed", id)
+	}
+	summary, err := resolvePromptInput(*summaryStdin, *summaryFile)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(summary) == "" {
+		return errors.New("session condense needs --summary-stdin or --summary-file with non-empty content")
+	}
+	tasks := st.TasksInSession(id)
+
+	if *asJSON {
+		preview := map[string]any{
+			"dry_run":  !*apply,
+			"session":  s,
+			"summary":  summary,
+			"affected": len(tasks),
+		}
+		if err := writeJSON(os.Stdout, preview); err != nil {
+			return err
+		}
+	} else {
+		if !*apply {
+			fmt.Println("dry run; pass --apply to commit the condensation")
+		}
+		fmt.Printf("Session %s would be marked condensed.\n", id)
+		fmt.Printf("Summary length: %d chars.\n", len(summary))
+		fmt.Printf("Tasks affected: %d.\n", len(tasks))
+		for _, t := range tasks {
+			fmt.Printf("  %s  %s  -> trim ImplementerPrompt + verbose Notes\n", t.ID, taskListLabel(t))
+		}
+	}
+	if !*apply {
+		return nil
+	}
+
+	s.Condensed = summary
+	s.EndedAt = time.Now()
+	for _, t := range tasks {
+		t.Condense()
+	}
+	if err := store.Save(st); err != nil {
+		return err
+	}
+	if !*asJSON {
+		fmt.Printf("condensed %d task(s) in session %s\n", len(tasks), id)
+	}
+	return nil
+}
+
+func printSession(w io.Writer, s *maestro.Session, includeBody bool) {
+	fmt.Fprintf(w, "id: %s\n", s.ID)
+	if s.Name != "" {
+		fmt.Fprintf(w, "name: %s\n", s.Name)
+	}
+	fmt.Fprintf(w, "started_at: %s\n", s.StartedAt.Format(time.RFC3339))
+	if !s.EndedAt.IsZero() {
+		fmt.Fprintf(w, "ended_at: %s\n", s.EndedAt.Format(time.RFC3339))
+		if s.Condensed != "" && includeBody {
+			fmt.Fprintln(w, "condensed:")
+			fmt.Fprintln(w, s.Condensed)
+		}
+	}
+}
+
+// ---- tag ----
+
+func cmdTag(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: maestro tag <list|rename>")
+	}
+	sub, rest := args[0], args[1:]
+	switch sub {
+	case "list":
+		return cmdTagList(rest)
+	case "rename":
+		return cmdTagRename(rest)
+	default:
+		return fmt.Errorf("unknown subcommand: tag %s", sub)
+	}
+}
+
+func cmdTagList(args []string) error {
+	fs := flag.NewFlagSet("tag list", flag.ContinueOnError)
+	project := fs.String("project", "", "project name")
+	withCounts := fs.Bool("with-counts", false, "include task counts per tag")
+	asJSON := fs.Bool("json", false, "JSON output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	_, st, err := loadState(*project)
+	if err != nil {
+		return err
+	}
+	counts := st.AllTags()
+	tags := make([]string, 0, len(counts))
+	for tag := range counts {
+		tags = append(tags, tag)
+	}
+	sort.Strings(tags)
+	if *asJSON {
+		out := make([]map[string]any, 0, len(tags))
+		for _, tag := range tags {
+			out = append(out, map[string]any{"tag": tag, "count": counts[tag]})
+		}
+		return writeJSON(os.Stdout, out)
+	}
+	if len(tags) == 0 {
+		fmt.Println("(no tags)")
+		return nil
+	}
+	for _, tag := range tags {
+		if *withCounts {
+			fmt.Printf("%-30s %d\n", tag, counts[tag])
+		} else {
+			fmt.Println(tag)
+		}
+	}
+	return nil
+}
+
+func cmdTagRename(args []string) error {
+	fs := flag.NewFlagSet("tag rename", flag.ContinueOnError)
+	project := fs.String("project", "", "project name")
+	from := fs.String("from", "", "old tag name (required)")
+	to := fs.String("to", "", "new tag name (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *from == "" || *to == "" {
+		return errors.New("--from and --to are required")
+	}
+	store, st, err := loadState(*project)
+	if err != nil {
+		return err
+	}
+	changed := st.RenameTagAcrossTasks(*from, *to)
+	if err := store.Save(st); err != nil {
+		return err
+	}
+	fmt.Printf("renamed %q -> %q on %d task(s)\n", *from, *to, changed)
+	return nil
+}
+
+// ---- search ----
+
+func cmdSearch(args []string) error {
+	fs := flag.NewFlagSet("search", flag.ContinueOnError)
+	project := fs.String("project", "", "project name")
+	text := fs.String("text", "", "case-insensitive substring match against label/description/summary")
+	tags := fs.String("tag", "", "comma-separated tags (any-of match)")
+	session := fs.String("session", "", "exact session ID")
+	statusFilter := fs.String("status", "", "comma-separated statuses (e.g. merged,abandoned)")
+	since := fs.String("since", "", "ISO timestamp; include only tasks updated >= this")
+	until := fs.String("until", "", "ISO timestamp; include only tasks updated <= this")
+	limit := fs.Int("limit", 20, "max results (0 for unlimited)")
+	full := fs.Bool("full", false, "JSON output: include verbose Notes (default omits them)")
+	asJSON := fs.Bool("json", false, "JSON output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	_, st, err := loadState(*project)
+	if err != nil {
+		return err
+	}
+
+	q := maestro.SearchQuery{
+		Text:    *text,
+		Session: *session,
+		Limit:   *limit,
+	}
+	if *tags != "" {
+		q.Tags = splitList(*tags)
+	}
+	if *statusFilter != "" {
+		for _, s := range splitList(*statusFilter) {
+			q.Statuses = append(q.Statuses, maestro.TaskStatus(s))
+		}
+	}
+	if *since != "" {
+		t, err := parseSearchTime(*since)
+		if err != nil {
+			return fmt.Errorf("--since: %w", err)
+		}
+		q.Since = t
+	}
+	if *until != "" {
+		t, err := parseSearchTime(*until)
+		if err != nil {
+			return fmt.Errorf("--until: %w", err)
+		}
+		q.Until = t
+	}
+
+	results := st.SearchTasks(q)
+
+	if *asJSON {
+		if *full {
+			return writeJSON(os.Stdout, results)
+		}
+		// Default: drop verbose fields
+		out := make([]map[string]any, 0, len(results))
+		for _, t := range results {
+			out = append(out, map[string]any{
+				"id":           t.ID,
+				"label":        t.Label,
+				"status":       t.Status,
+				"session":      t.Session,
+				"tags":         t.Tags,
+				"summary":      t.Summary,
+				"final_commit": t.FinalCommit,
+				"updated_at":   t.UpdatedAt,
+			})
+		}
+		return writeJSON(os.Stdout, out)
+	}
+
+	if len(results) == 0 {
+		fmt.Println("(no matches)")
+		return nil
+	}
+	for _, t := range results {
+		ses := t.Session
+		if ses == "" {
+			ses = "-"
+		}
+		tags := strings.Join(t.Tags, ",")
+		if tags == "" {
+			tags = "-"
+		}
+		fmt.Printf("%-4s %-16s %-12s %-30s %s\n", t.ID, t.Status, ses, tags, taskListLabel(t))
+	}
+	return nil
+}
+
+// parseSearchTime accepts RFC3339 or yyyy-mm-dd.
+func parseSearchTime(s string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("invalid time %q (use RFC3339 or yyyy-mm-dd)", s)
+}
+
 // ---- helpers ----
+
+// resolvePromptInput reads the implementer prompt body from stdin, a file,
+// or returns "" if neither was specified. Mutual exclusion is enforced.
+func resolvePromptInput(stdinFlag bool, file string) (string, error) {
+	if stdinFlag && file != "" {
+		return "", errors.New("--prompt-stdin and --prompt-file are mutually exclusive")
+	}
+	if stdinFlag {
+		return readStdin()
+	}
+	if file != "" {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return "", fmt.Errorf("read prompt file: %w", err)
+		}
+		return string(data), nil
+	}
+	return "", nil
+}
+
+// readStdin slurps stdin to EOF. Used by --prompt-stdin and
+// --note-content-stdin. Heredoc-friendly.
+func readStdin() (string, error) {
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return "", fmt.Errorf("read stdin: %w", err)
+	}
+	return string(data), nil
+}
 
 // parseFlagsWithID parses flags allowing the task ID to appear in any
 // position (before flags, after flags, or between flags). The stdlib flag
@@ -1324,6 +1960,12 @@ func printTask(w io.Writer, t *maestro.Task, asJSON bool) error {
 		fmt.Fprintf(w, "label: %s\n", t.Label)
 	}
 	fmt.Fprintf(w, "status: %s\n", t.Status)
+	if t.Session != "" {
+		fmt.Fprintf(w, "session: %s\n", t.Session)
+	}
+	if len(t.Tags) > 0 {
+		fmt.Fprintf(w, "tags: %s\n", strings.Join(t.Tags, ","))
+	}
 	fmt.Fprintf(w, "description: %s\n", summarizeOneLine(t.Description))
 	fmt.Fprintf(w, "branch: %s\n", t.Branch)
 	fmt.Fprintf(w, "base_branch: %s\n", t.BaseBranch)
@@ -1331,6 +1973,9 @@ func printTask(w io.Writer, t *maestro.Task, asJSON bool) error {
 	fmt.Fprintf(w, "worktree: %s\n", t.WorktreePath)
 	if t.AgentID != "" {
 		fmt.Fprintf(w, "agent_id: %s\n", t.AgentID)
+	}
+	if t.ImplementerPrompt != "" {
+		fmt.Fprintf(w, "implementer_prompt: %d chars (use `task get-prompt %s` to read)\n", len(t.ImplementerPrompt), t.ID)
 	}
 	if len(t.DeclaredFiles) > 0 {
 		fmt.Fprintf(w, "declared_files: %s\n", strings.Join(t.DeclaredFiles, ","))
@@ -1343,6 +1988,9 @@ func printTask(w io.Writer, t *maestro.Task, asJSON bool) error {
 	}
 	if len(t.Notes) > 0 {
 		fmt.Fprintf(w, "notes: %d\n", len(t.Notes))
+	}
+	if !t.CondensedAt.IsZero() {
+		fmt.Fprintf(w, "condensed_at: %s\n", t.CondensedAt.Format(time.RFC3339))
 	}
 	return nil
 }
