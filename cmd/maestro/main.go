@@ -49,6 +49,9 @@ Coordination:
   worktree restore <id>      Re-create a worktree from its branch (recovery)
   task delete <id>           Delete a task record (and its worktree by default)
 
+Display:
+  statusline                 One-line task summary, suitable for a Claude Code statusLine
+
 Project scope:
   Most commands need a project. Pass --project=<name> or set MAESTRO_PROJECT.
 
@@ -85,6 +88,8 @@ func run(args []string) error {
 		return cmdConflicts(rest)
 	case "worktree":
 		return cmdWorktree(rest)
+	case "statusline":
+		return cmdStatusline(rest)
 	default:
 		return fmt.Errorf("unknown command %q (run `maestro` for usage)", cmd)
 	}
@@ -1024,6 +1029,105 @@ func cmdWorktreeRestore(args []string) error {
 	}
 	fmt.Printf("restored: %s (branch %s)\n", t.WorktreePath, t.Branch)
 	return nil
+}
+
+// ---- statusline ----
+
+// cmdStatusline emits one line summarizing active tasks, suitable for
+// configuring as a Claude Code statusLine. Designed to fail silently
+// (empty output) so it never injects errors into the agent's display.
+//
+// Project resolution: --project flag, then MAESTRO_PROJECT env, then
+// auto-detect from cwd via FindProjectsByRepo. Most-recently-updated wins
+// when multiple maestro projects target the same repo.
+func cmdStatusline(args []string) error {
+	fs := flag.NewFlagSet("statusline", flag.ContinueOnError)
+	project := fs.String("project", "", "project name (defaults to MAESTRO_PROJECT or cwd auto-detect)")
+	omitName := fs.Bool("no-project-name", false, "don't prefix output with the project name")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	name := resolveStatuslineProject(*project)
+	if name == "" {
+		// No project to report on; print nothing so the statusline stays clean.
+		return nil
+	}
+	store, err := maestro.NewStore(name)
+	if err != nil {
+		return nil
+	}
+	st, err := store.Load()
+	if err != nil {
+		return nil
+	}
+
+	var pending, inProgress, awaiting, blocked int
+	for _, t := range st.Tasks {
+		switch t.Status {
+		case maestro.StatusPending:
+			pending++
+		case maestro.StatusInProgress:
+			inProgress++
+		case maestro.StatusAwaitingReview:
+			awaiting++
+		case maestro.StatusBlocked:
+			blocked++
+		}
+	}
+
+	var parts []string
+	if inProgress > 0 {
+		parts = append(parts, fmt.Sprintf("%d in-progress", inProgress))
+	}
+	if pending > 0 {
+		parts = append(parts, fmt.Sprintf("%d pending", pending))
+	}
+	if awaiting > 0 {
+		parts = append(parts, fmt.Sprintf("%d awaiting", awaiting))
+	}
+	if blocked > 0 {
+		parts = append(parts, fmt.Sprintf("%d blocked", blocked))
+	}
+
+	body := "no active tasks"
+	if len(parts) > 0 {
+		body = strings.Join(parts, " · ")
+	}
+	if *omitName {
+		fmt.Println(body)
+	} else {
+		fmt.Printf("%s: %s\n", name, body)
+	}
+	return nil
+}
+
+// resolveStatuslineProject is the lenient version of resolveProject.
+// Returns "" instead of an error so the statusline silently produces no
+// output when there's nothing to report.
+func resolveStatuslineProject(flagVal string) string {
+	if flagVal != "" {
+		return flagVal
+	}
+	if env := os.Getenv("MAESTRO_PROJECT"); env != "" {
+		return env
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	g := &maestro.Git{RepoPath: cwd}
+	if !g.IsRepo() {
+		return ""
+	}
+	top, err := g.Toplevel()
+	if err != nil {
+		return ""
+	}
+	matches, err := maestro.FindProjectsByRepo(top)
+	if err != nil || len(matches) == 0 {
+		return ""
+	}
+	return matches[0].Name
 }
 
 // ---- helpers ----

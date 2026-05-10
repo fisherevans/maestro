@@ -129,6 +129,7 @@ maestro worktree path <id>
 maestro worktree cleanup <id> [--force]
 maestro worktree restore <id>
 maestro project sweep [--older-than=7d] [--status=merged,abandoned] [--apply] [--keep-worktrees]
+maestro statusline [--project=<name>] [--no-project-name]
 ```
 
 `worktree cleanup` removes the directory but keeps the task record so SendMessage to the original sub-agent still works for follow-up questions. `task delete` removes the record entirely (and the worktree by default). `project sweep` is the bulk version, dry-run by default; suitable for cron or a between-sessions tidy-up.
@@ -136,6 +137,26 @@ maestro project sweep [--older-than=7d] [--status=merged,abandoned] [--apply] [-
 `project find` is how the orchestrator notices it's been in a repo before. `project rename` requires no active worktrees (worktree paths are absolute and would break). For milestones / phase boundaries, just `maestro init` a new project name pointing at the same repo - multiple projects per repo is supported.
 
 Most commands need a project. Pass `--project=<name>` or set `MAESTRO_PROJECT`. Pass `--json` to most commands for machine-readable output.
+
+## Statusline
+
+`maestro statusline` emits a one-line summary of active tasks. Suitable for Claude Code's `statusLine` setting:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "maestro statusline",
+    "refreshInterval": 5
+  }
+}
+```
+
+Output looks like `jellybean: 2 in-progress · 1 pending · 1 blocked`. Counts only active statuses (excludes merged and abandoned). Prints nothing when there's no maestro project for the current cwd, so the line is clean when you're working outside an orchestrated repo.
+
+Project resolution order: `--project` flag, then `MAESTRO_PROJECT` env, then auto-detect from cwd via `project find`. If two Claude Code sessions are running in different repos, each session's statusline auto-scopes to its own project; in the rare case of two sessions in the same repo, set `MAESTRO_PROJECT` differently in each shell to disambiguate.
+
+Flags: `--project=<name>` to pin explicitly, `--no-project-name` to omit the project prefix.
 
 ## Task lifecycle
 
