@@ -138,23 +138,23 @@ maestro statusline [--project=<name>] [--no-project-name]
 
 Most commands need a project. Pass `--project=<name>` or set `MAESTRO_PROJECT`. Pass `--json` to most commands for machine-readable output.
 
-## Statusline
+## Statusline (optional)
 
-`maestro statusline` emits a one-line summary of active tasks. Suitable for Claude Code's `statusLine` setting:
+`maestro statusline` emits a one-line summary of active tasks (e.g. `jellybean: 2 in-progress · 1 pending · 1 blocked`). Suitable for Claude Code's `statusLine` setting.
 
-```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "maestro statusline",
-    "refreshInterval": 5
-  }
-}
+`install.sh` does not configure this. Claude Code only has one `statusLine` slot, and replacing whatever you already have (e.g. ccstatusline) without asking would be rude. Opt in via:
+
+```
+./enable-statusline.sh             # print the snippet, change nothing
+./enable-statusline.sh --apply     # write to ~/.claude/settings.json (with timestamped backup)
+./enable-statusline.sh --remove    # delete the statusLine key
 ```
 
-Output looks like `jellybean: 2 in-progress · 1 pending · 1 blocked`. Counts only active statuses (excludes merged and abandoned). Prints nothing when there's no maestro project for the current cwd, so the line is clean when you're working outside an orchestrated repo.
+`--apply` and `--remove` need `jq`. `--apply` makes a `.bak.<timestamp>` of your current settings before writing.
 
-Project resolution order: `--project` flag, then `MAESTRO_PROJECT` env, then auto-detect from cwd via `project find`. If two Claude Code sessions are running in different repos, each session's statusline auto-scopes to its own project; in the rare case of two sessions in the same repo, set `MAESTRO_PROJECT` differently in each shell to disambiguate.
+Output behavior: counts only active statuses (excludes merged and abandoned). Prints nothing when there's no maestro project for the current cwd, so the line stays clean outside orchestrated repos.
+
+Project resolution order: `--project` flag, then `MAESTRO_PROJECT` env, then auto-detect from cwd via `project find`. Multiple Claude Code sessions in different repos each auto-scope to their own project; sessions in the same repo can disambiguate with `export MAESTRO_PROJECT=...`.
 
 Flags: `--project=<name>` to pin explicitly, `--no-project-name` to omit the project prefix.
 
