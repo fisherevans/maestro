@@ -1,9 +1,35 @@
 # maestro
 
-A Claude Code skill that turns the main agent into an orchestrator. The orchestrator does no implementation itself - it spawns sub-agents in isolated git worktrees, tracks them, and handles merging. The point is to keep the main agent's context clean across long iteration sessions and to stay responsive when you pepper in multiple small fixes.
+A Claude Code skill that turns the main agent into an orchestrator. It does no implementation itself - every coding, planning, or review task gets delegated to a sub-agent in an isolated git worktree, and the orchestrator handles merging when they're done.
 
-Repo contents:
-- `skill/SKILL.md` - the skill that defines orchestrator behavior. Install to `~/.claude/skills/maestro/`.
+The problem this solves: long iteration sessions on a project, where you keep peppering the agent with small fixes ("change this label, fix that bug, also can you rename Foo to Bar"). A normal session loses track when you do that. The agent forgets earlier requests, interrupts in-progress work to chase new ones, or ends with 60 modified files in a tangle. Maestro keeps the orchestrator's context lean by pushing implementation, exploration, and even merge plumbing out to sub-agents that report back in 2-4 sentence summaries. You can fire off five things in a row, walk away, come back to a clean merge log.
+
+Concretely, a session looks like:
+
+```
+You: fix the login race + rename getFoo to fetchFoo
+
+Orchestrator: dispatched
+  t12: fix login race          (background)
+  t13: rename getFoo→fetchFoo  (background, declared files don't conflict)
+
+[time passes]
+
+Orchestrator: t12: fix login race merged. Smoke gate passed.
+              t13: rename getFoo→fetchFoo merged. Smoke gate passed.
+
+You: how does the login fix actually work?
+
+Orchestrator: [sends message to t12's original sub-agent, who still has context]
+              "Wraps the credential check in a sync.Once so concurrent requests
+              from the same client don't double-validate. See auth/login.go:84."
+```
+
+Sub-agents commit on their own branches but never merge or push. The orchestrator runs the merge protocol via a dedicated merge sub-agent (so the smoke gate's build/test output never enters the orchestrator's context). For follow-up questions on completed work, it routes back to the original implementer via SendMessage. None of this enters the main session's context window beyond the short status reports.
+
+## Layout
+
+- `skill/SKILL.md` - defines orchestrator behavior. Installed at `~/.claude/skills/maestro/`.
 - `cmd/maestro` - a small Go CLI that holds task state and creates worktrees. Stateful glue so the orchestrator doesn't have to reinvent bookkeeping each session.
 - `internal/maestro` - the package the CLI is built on.
 
@@ -11,14 +37,14 @@ Repo contents:
 
 The skill alone would force the orchestrator to track tasks, branches, agent IDs, declared file lists, and merge state in its own context. That's exactly what bloats context across long sessions and what we're trying to avoid. The CLI moves bookkeeping to a deterministic tool the orchestrator just calls.
 
-The CLI is intentionally medium-thin: it manages state and worktrees only. It does not run `git merge`, `git rebase`, or `git pull`. Those steps live in the skill prompt so the orchestrator owns the merge protocol explicitly. This keeps the failure modes obvious: state corruption is a CLI bug, merge mistakes are a skill prompt issue.
+The CLI is intentionally medium-thin: it manages state and worktrees only. Merge plumbing lives in the skill prompt and runs via a delegated merge sub-agent. State corruption is a CLI bug; merge mistakes are a skill prompt issue. Failure modes stay separable.
 
 ## Install
 
-Requires Go on your PATH.
+Requires Go (1.23+) on your PATH and Claude Code.
 
 ```
-git clone <this-repo> maestro
+git clone https://github.com/fisherevans/maestro.git
 cd maestro
 ./install.sh
 ```
@@ -124,9 +150,18 @@ abandoned        cancelled before merge
 
 `active` is a virtual filter that selects everything except `merged` and `abandoned`. Useful for `maestro task list --status=active` to see what's still in flight.
 
+## Status
+
+Young project. Built and exercised across a handful of real sessions on a multi-component codebase (Go backend + two Vite/React frontends). The skill behaves as designed in those sessions but the surface area is large; expect rough edges.
+
 ## Known limitations
 
-- Sandboxing is advisory. The skill prompt tells implementer sub-agents to stay in their worktree, but Claude Code has no path-level enforcement, so sub-agents can still drift. Watch for it; reinforce in your prompts; don't let `~50%` slippage rate become acceptable.
-- The merge protocol is in the skill prompt, not the CLI. If the orchestrator forgets a step (`--no-ff`, stash protection, branch deletion), nothing catches it.
-- No locking. Two `maestro task new` calls racing on the same project could allocate the same ID. In practice the orchestrator is single-threaded, so this hasn't come up.
+- Sandboxing is advisory. The implementer prompt tells sub-agents to stay in their worktree, but Claude Code has no path-level enforcement, so sub-agents can still drift into the parent repo. The hard rules in the prompt template have brought the slippage rate down substantially in observed sessions, but it's not zero. Reinforce in your prompts; don't soften the rules.
+- The merge protocol lives in the skill prompt (executed by a delegated merge sub-agent). If the merge sub-agent skips a step (`--no-ff`, stash protection, branch deletion, smoke gate), nothing in the CLI catches it. The skill prescribes the protocol explicitly; failures show up as messy git history, not silent corruption.
+- No locking on state writes. Two `maestro task new` calls racing on the same project could allocate the same ID. The orchestrator is single-threaded so this hasn't come up.
 - Conflict detection is by declared file overlap only. Two tasks that touch the same file in different functions still serialize.
+- `project rename` refuses while any worktrees exist (worktree paths are absolute and would break). Use the milestone-fork pattern instead - just `maestro init` a new project name on the same repo.
+
+## Contributing
+
+Issues and PRs welcome. The codebase is small (~1500 lines Go + ~350 lines markdown skill). The skill prompt is the highest-leverage surface; if you have ideas on tightening orchestrator behavior, that's the place. The CLI is intentionally bounded; new features should justify the additional protocol surface.
