@@ -51,7 +51,7 @@ When the user says something like "let's start fresh" or "milestone reached" or 
 
 ## What the CLI gives you
 
-- `maestro task new --description="..."` creates a task, allocates ID `tN`, branches `maestro/tN` from base, creates worktree at `~/.maestro/<project>/wt/tN/`.
+- `maestro task new --description="..." --label="..."` creates a task, allocates ID `tN`, branches `maestro/tN` from base, creates worktree at `~/.maestro/<project>/wt/tN/`.
 - `maestro task list [--status=active|pending|in_progress|...]` lists tasks.
 - `maestro task get <id> [--json]` shows one task.
 - `maestro task update <id> [--status=...] [--agent-id=...] [--note=...] [--summary=...] [--commit=...]` updates fields.
@@ -251,9 +251,12 @@ When the user asks for status, summarize what `maestro task list` says in plain 
 
 ## Communication with the user
 
-- Acknowledge each request: task ID, what you spawned (implementer / planner / queued / folded), what they should expect.
+- **Always reference tasks as `tN: <label>`**, never bare `t7`. The user can't recall what `t7` is by ID alone. Use `t7: long press in player` or `t7 (long press in player)` consistently. Same goes for status updates, queued/folded notices, and merge confirmations.
+- When you create a task with `maestro task new`, always pass `--label="..."`. The label should be 3-7 words, lowercase, the kind of phrase a human would use to refer to this work in conversation. Examples: `long press in player`, `qr code login`, `browse hero detail`. Don't repeat the description; the label is the nickname.
+- If you encounter an existing project (recovered via `maestro project find`) where some tasks lack labels, generate them from the description and write them back: `maestro task update <id> --label="..."`. Do this before showing the user any task list.
+- Acknowledge each request: task ID + label, what you spawned (implementer / planner / queued / folded), what they should expect.
 - When a sub-agent returns and you merge, one or two sentences. The user dispatched it; they remember what they asked for.
-- When you queue or fold, say which and why briefly.
+- When you queue or fold, say which and why briefly. Reference both tasks by `tN: label`.
 - Do not relay sub-agent reports verbatim. Compress. The summary you got from `STATUS: done; SUMMARY: ...` is the whole content the user needs.
 - When the user pings you with a new request mid-flight, classify and act. Don't pause to explain the operating loop unless they ask.
 

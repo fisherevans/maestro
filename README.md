@@ -90,10 +90,10 @@ maestro project show
 maestro project find --repo=<path>
 maestro project update [--smoke-gate=...] [--default-base=...] [--clear-smoke-gate]
 maestro project rename --to=<name>
-maestro task new --description="..." [--base=<branch>]
+maestro task new --description="..." [--label="..."] [--base=<branch>]
 maestro task list [--status=active|pending|in_progress|...]
 maestro task get <id> [--json]
-maestro task update <id> [--status=...] [--agent-id=...] [--note=...] [--summary=...] [--commit=...]
+maestro task update <id> [--status=...] [--agent-id=...] [--label=...] [--note=...] [--summary=...] [--commit=...]
 maestro task files <id> [--add=a,b] [--remove=a,b] [--set=a,b]
 maestro task done <id> [--summary=...] [--commit=...]
 maestro task abandon <id> [--note=...]

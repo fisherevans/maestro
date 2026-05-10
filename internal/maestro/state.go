@@ -62,6 +62,7 @@ type Project struct {
 // Task is one unit of work assigned to a sub-agent.
 type Task struct {
 	ID            string     `json:"id"`
+	Label         string     `json:"label,omitempty"`
 	Description   string     `json:"description"`
 	Status        TaskStatus `json:"status"`
 	Branch        string     `json:"branch"`

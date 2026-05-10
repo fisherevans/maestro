@@ -419,6 +419,7 @@ func cmdTaskNew(args []string) error {
 	fs := flag.NewFlagSet("task new", flag.ContinueOnError)
 	project := fs.String("project", "", "project name")
 	desc := fs.String("description", "", "task description (required)")
+	label := fs.String("label", "", "short human-readable label, e.g. 'long press in player' (recommended)")
 	base := fs.String("base", "", "base branch (default: project default_base)")
 	asJSON := fs.Bool("json", false, "JSON output")
 	if err := fs.Parse(args); err != nil {
@@ -457,6 +458,7 @@ func cmdTaskNew(args []string) error {
 	now := time.Now()
 	t := &maestro.Task{
 		ID:           id,
+		Label:        strings.TrimSpace(*label),
 		Description:  strings.TrimSpace(*desc),
 		Status:       maestro.StatusPending,
 		Branch:       branch,
@@ -497,9 +499,16 @@ func cmdTaskList(args []string) error {
 		return nil
 	}
 	for _, t := range tasks {
-		fmt.Printf("%s  %-16s  %s\n", t.ID, t.Status, summarizeOneLine(t.Description))
+		fmt.Printf("%s  %-16s  %s\n", t.ID, t.Status, taskListLabel(t))
 	}
 	return nil
+}
+
+func taskListLabel(t *maestro.Task) string {
+	if t.Label != "" {
+		return t.Label
+	}
+	return summarizeOneLine(t.Description)
 }
 
 func filterByStatus(tasks []*maestro.Task, filter string) []*maestro.Task {
@@ -553,6 +562,7 @@ func cmdTaskUpdate(args []string) error {
 	agentID := fs.String("agent-id", "", "agent ID for SendMessage routing")
 	note := fs.String("note", "", "append a note (audit trail)")
 	noteSrc := fs.String("note-source", "orchestrator", "note source label (orchestrator|agent|user)")
+	label := fs.String("label", "", "short human-readable label")
 	summary := fs.String("summary", "", "update task summary")
 	commit := fs.String("commit", "", "update final commit SHA")
 	asJSON := fs.Bool("json", false, "JSON output")
@@ -574,6 +584,10 @@ func cmdTaskUpdate(args []string) error {
 	}
 	if *agentID != "" {
 		t.AgentID = *agentID
+		t.UpdatedAt = time.Now()
+	}
+	if *label != "" {
+		t.Label = strings.TrimSpace(*label)
 		t.UpdatedAt = time.Now()
 	}
 	if *summary != "" {
@@ -729,7 +743,7 @@ func cmdConflicts(args []string) error {
 		return nil
 	}
 	for _, c := range conflicts {
-		fmt.Printf("%s  %-16s  %s\n", c.ID, c.Status, summarizeOneLine(c.Description))
+		fmt.Printf("%s  %-16s  %s\n", c.ID, c.Status, taskListLabel(c))
 		for _, f := range overlapFiles(check, c.DeclaredFiles) {
 			fmt.Printf("    %s\n", f)
 		}
@@ -868,6 +882,9 @@ func printTask(w io.Writer, t *maestro.Task, asJSON bool) error {
 		return writeJSON(w, t)
 	}
 	fmt.Fprintf(w, "id: %s\n", t.ID)
+	if t.Label != "" {
+		fmt.Fprintf(w, "label: %s\n", t.Label)
+	}
 	fmt.Fprintf(w, "status: %s\n", t.Status)
 	fmt.Fprintf(w, "description: %s\n", summarizeOneLine(t.Description))
 	fmt.Fprintf(w, "branch: %s\n", t.Branch)
