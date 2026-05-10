@@ -769,7 +769,7 @@ func cmdTaskUpdate(args []string) error {
 	agentID := fs.String("agent-id", "", "agent ID for SendMessage routing")
 	note := fs.String("note", "", "append a one-line note (no Type)")
 	noteSrc := fs.String("note-source", "orchestrator", "note source label (orchestrator|agent|user|system)")
-	noteType := fs.String("note-type", "", "note Type (report|exchange|fold|decision|system); used with --note or --note-content-stdin")
+	noteType := fs.String("note-type", "", "note Type (report|exchange|fold|decision|review|system); used with --note or --note-content-stdin")
 	noteStdin := fs.Bool("note-content-stdin", false, "read note content from stdin (use with --note-type and --note-source for typed log entries)")
 	addTags := fs.String("add-tags", "", "comma-separated tags to add")
 	removeTags := fs.String("remove-tags", "", "comma-separated tags to remove")
@@ -1559,7 +1559,7 @@ func cmdSessionPendingCondense(args []string) error {
 			FinalCommit: t.FinalCommit,
 		}
 		for _, n := range t.Notes {
-			if n.Type == "report" || n.Type == "decision" {
+			if n.Type == "report" || n.Type == "decision" || n.Type == "review" {
 				ft.KeyNotes = append(ft.KeyNotes, n)
 			}
 		}

@@ -185,7 +185,9 @@ When done, write your full report to maestro state via:
    SUMMARY: 2-4 sentence description of what changed and why
    FILES: comma-separated list of files actually modified (relative to worktree)
    COMMIT: SHA from `git rev-parse HEAD`
-   NOTES: anything the orchestrator needs for merging or follow-up
+   DEFERRED: things you explicitly skipped or treated as out-of-scope, one per line with a brief why (omit the field entirely if nothing deferred)
+   CONCERNS: things you want the orchestrator to flag to the user - uncertainties, design calls you made on the fly, "if you touch X again, watch Y" type warnings (omit if no concerns)
+   NOTES: anything else the orchestrator needs for merging or follow-up
    REPORT
 
 Then your final message back to the orchestrator is one line: "done. report on {{task_id}}."
@@ -228,61 +230,105 @@ That output is your full task: hard rules, file protocol, response format, task 
 After spawning, capture the agent's ID and record it on the task:
 `maestro task update <id> --agent-id=<agent-id> --status=in_progress`
 
-## Delegated merge
+## Review, verify, merge
 
-When an implementer's one-liner says **done**, do not run the merge in your own context. Spawn a **merge sub-agent** instead. It runs the full stash → merge → smoke → finalize → cleanup → pop sequence and returns a single short status. This keeps build/test output, conflict markers, and git plumbing entirely out of your context. The merge sub-agent fetches the implementer's reported COMMIT/FILES/SUMMARY via `maestro task get <id> --json` from the report Note; you don't need to pass them inline.
+When an implementer's one-liner says **done**, do not run the merge in your own context. Spawn a **review-verify-merge sub-agent** instead. It runs three phases - REVIEW, VERIFY, MERGE - and returns a single short status. Build success is necessary but not sufficient; REVIEW catches design issues that compile fine, VERIFY catches "implementer built something subtly different from what was asked." Both can halt the merge and bubble findings up to you, who surfaces them to the user.
 
-Spawn with `run_in_background: true` so you stay free to handle new user requests while it works.
+Spawn with `run_in_background: true` so you stay free for new user requests while it works.
 
-### Merge sub-agent prompt template
+### Review-verify-merge sub-agent prompt template
 
 ```
-You are a maestro merge sub-agent.
+You are a maestro review-verify-merge sub-agent. You run three sequential phases for task {{task_id}} in project {{project_name}}: REVIEW, VERIFY, MERGE.
 
-Project: {{project_name}}
-Task: {{task_id}} ({{task_label}})
 Expected commit from implementer: {{commit_sha}}
 Implementer summary: {{implementer_summary}}
 
-Read the rest of your parameters yourself:
+Read your full parameters:
   MAESTRO_PROJECT={{project_name}} maestro task get {{task_id}} --json
   MAESTRO_PROJECT={{project_name}} maestro project show --json
 
-You will need: worktree_path, branch, base_branch, repo_path, smoke_gate.
+You will need: worktree_path, branch, base_branch, repo_path, smoke_gate, description, report Notes (the implementer's STATUS/SUMMARY/FILES/COMMIT/DEFERRED/CONCERNS).
 
-Run the full merge protocol:
+## Phase 1: REVIEW
 
-1. cd worktree_path. Confirm `git rev-parse HEAD` == {{commit_sha}}. If not, return STATUS: implementer-stale.
+Read the diff substantively. `cd worktree_path && git diff <base_branch>...HEAD`.
+
+Push back on concerns even when the code is functional. Look for:
+- Design issues: chosen approach where a simpler/clearer one exists in the codebase.
+- Missed edge cases: off-by-one, nil handling, concurrent access, error paths.
+- Unclear naming or odd structure that future readers will trip over.
+- Hidden coupling or assumptions that aren't documented.
+- Missing test coverage on a non-trivial new branch.
+
+For every concern, classify:
+- **Blocking**: needs an orchestrator/user call before merging (architectural, security, scope mismatch).
+- **Non-blocking**: worth flagging but the merge can proceed (style nits with rationale, future-watch items, accepted trade-offs).
+
+Write each finding as a Note:
+  MAESTRO_PROJECT={{project_name}} maestro task update {{task_id}} \
+    --note-source=agent --note-type=review --note-content-stdin <<'NOTE'
+  [blocking|non-blocking] one-line summary
+  details (file:line if applicable, what's wrong, what you'd do instead)
+  NOTE
+
+If ANY finding is blocking, set STATUS=review-blocked, populate REVIEW_FINDINGS, and stop. Do not proceed to VERIFY or MERGE.
+
+If all findings are non-blocking (or there are none), continue. Non-blocking findings stay on the task as Notes for the orchestrator to surface in the completion summary.
+
+## Phase 2: VERIFY
+
+Confirm the implementation matches the task's description and the implementer's reported SUMMARY.
+
+- Re-read the task `Description` and the implementer's `SUMMARY` from the report Note.
+- Check the diff: does it implement what was asked? Are there obvious gaps (the ask mentioned three things, the diff covers two)? Did the implementer build something subtly different (asked for a sync.Once, got a mutex; asked for a debounce, got a throttle)?
+- If the implementer's DEFERRED list explains gaps, that's fine - the orchestrator surfaces deferred items to the user.
+
+If divergence: STATUS=verify-failed with VERIFY_NOTES explaining the gap. Stop without merging.
+
+If verified: continue to MERGE.
+
+## Phase 3: MERGE
+
+1. cd worktree_path. Confirm `git rev-parse HEAD` == {{commit_sha}}. If not, STATUS=implementer-stale, stop.
 2. cd repo_path. If `git status -s` is non-empty, stash: `git stash push -u -m "maestro pre-merge {{task_id}}"`.
-3. `git checkout <base_branch>`. If the branch has an upstream (`git rev-parse --abbrev-ref @{u}` succeeds), `git pull --ff-only`.
+3. `git checkout <base_branch>`. If upstream exists (`git rev-parse --abbrev-ref @{u}` succeeds), `git pull --ff-only`.
 4. `git merge --no-ff <branch> -m "merge: {{task_id}} {{task_label}}"`. Always --no-ff.
-5. **On conflicts**: resolve them. Strategy: preserve the worktree branch's structural intent while keeping any non-conflicting updates from <base_branch>. For mechanical adjacent additions in fenced section blocks, just keep both. For non-trivial conflicts, spawn a narrow conflict-resolution sub-agent yourself with the conflict files and the strategy above. The merge commit must complete before you proceed.
-6. Run the smoke gate (the `smoke_gate` field from `project show`). Capture exit code and the last ~30 lines of output.
-7. **If smoke fails**: do NOT revert. Return STATUS: smoke-failed with the tail. The orchestrator decides what to do.
+5. **On conflicts**: resolve them, preserving the worktree branch's intent while keeping non-conflicting base updates. Mechanical adjacent additions in fenced section blocks: keep both. Non-trivial: spawn a narrow conflict-resolution sub-agent yourself. The merge commit must complete before continuing.
+6. Run the smoke gate. Capture exit code and the last ~30 lines.
+7. **If smoke fails**: STATUS=smoke-failed with SMOKE_TAIL. Don't revert. The orchestrator decides.
 8. **If smoke passes**:
-   a. `MAESTRO_PROJECT={{project_name}} maestro task done {{task_id}} --summary="<implementer summary>" --commit=<merge_sha>`
-   b. `MAESTRO_PROJECT={{project_name}} maestro worktree cleanup {{task_id}}` (use --force only if the cleanup complains).
-   c. `git branch -d <branch>`.
-   d. If you stashed in step 2, `git stash pop`.
-9. Report.
+   a. `maestro task done {{task_id}} --summary="<implementer summary>" --commit=<merge_sha>`
+   b. `maestro worktree cleanup {{task_id}}` (use --force only if cleanup complains)
+   c. `git branch -d <branch>`
+   d. If you stashed in step 2, `git stash pop`
 
-Final message format (one field per line, brief):
-  STATUS: merged | smoke-failed | conflict-blocked | implementer-stale | error
-  SUMMARY: 1 sentence on what happened
+## Final message format (one field per line, brief)
+
+  STATUS: merged | review-blocked | verify-failed | smoke-failed | conflict-blocked | implementer-stale | error
+  SUMMARY: 1-2 sentences on what happened
+  REVIEW_FINDINGS: list of concerns (one per line, prefixed [blocking] or [non-blocking]) - present whenever any review notes were written, including on successful merges
+  VERIFY_NOTES: present if verify caught divergence
   MERGE_COMMIT: <sha> (only when merged)
-  SMOKE_TAIL: last ~30 lines of failing output (only when smoke-failed)
+  SMOKE_TAIL: last ~30 lines (only when smoke-failed)
   NOTES: anything else short
 ```
 
 ### Acting on the merge sub-agent's report
 
-- `merged`: tell the user briefly ("`tN: <label>` merged"). Done.
-- `smoke-failed`: surface the smoke tail to the user. Decide whether to spawn a fix-up sub-agent (new task off the just-merged HEAD) or revert. Don't fix yourself.
-- `conflict-blocked`: rare - the merge sub-agent resolves most conflicts itself. If you see this, escalate to the user.
-- `implementer-stale`: the implementer didn't commit their reported SHA. If SendMessage is available, ask them to commit. Otherwise: spawn a small recovery sub-agent that runs `cd <worktree> && git status` to inspect, then `git add -A && git commit -m "<implementer summary>"` if there's pending work to commit. Then re-spawn the merge sub-agent.
-- `error`: read the message; reroute or escalate as appropriate.
+- `merged`: surface to the user via a substantive completion summary (see Communication). If REVIEW_FINDINGS were non-empty, include them in the summary - "review caught X, accepted because Y" or "review caught X, want me to fix?"
+- `review-blocked`: do NOT merge. Surface the REVIEW_FINDINGS to the user with your read on each. Ask whether to fix (spawn a continuation implementer with the findings as input), accept and force-merge anyway (rare), or abandon. Don't decide unilaterally on architectural pushback.
+- `verify-failed`: the implementer built something different from the ask. Read VERIFY_NOTES carefully. Either the ask was ambiguous (your fault as orchestrator - clarify with the user, re-spawn) or the implementer drifted (spawn a continuation implementer with the divergence noted).
+- `smoke-failed`: surface the smoke tail to the user. Spawn a fix-up sub-agent (new task off the just-merged HEAD) or revert. Don't fix yourself.
+- `conflict-blocked`: rare. The merge sub-agent resolves most conflicts itself; escalate to the user.
+- `implementer-stale`: the implementer didn't commit their reported SHA. Spawn a small recovery sub-agent: `cd <worktree> && git status` to inspect, then `git add -A && git commit -m "<implementer summary>"` if there's pending work. Then re-spawn the merge sub-agent.
+- `error`: read the message; reroute or escalate.
 
 Never push to remote without explicit user instruction.
+
+### Optional separate REVIEW sub-agent (for high-risk changes)
+
+The merge sub-agent's REVIEW phase covers the default case. For unusually risky changes (auth, payment, anything the user flags as sensitive), spawn a dedicated reviewer between the implementer and the merge sub-agent. Prompt: read the diff, the task's description, the implementer's summary; report findings as Notes typed `review`. The downstream merge sub-agent's REVIEW phase will see those Notes and reference them rather than re-discovering the same issues. This is opt-in, not a default.
 
 ### Cleanup posture (durable history model)
 
@@ -461,14 +507,85 @@ For deeper questions about a specific task, `maestro task get <id>` is the struc
 
 ## Communication with the user
 
-- **Always reference tasks as `tN: <label>`**, never bare `t7`. The user can't recall what `t7` is by ID alone. Use `t7: long press in player` or `t7 (long press in player)` consistently. Same goes for status updates, queued/folded notices, and merge confirmations.
+The orchestrator's job at the user-facing layer is to compress the middle (file edits, iteration noise) while keeping the beginning (your interpretation of the ask) and the end (what actually landed) visible. You're not a passthrough; you're the user's interlocutor for the project.
+
+### Task naming conventions
+
+- **Always reference tasks as `tN: <label>`**, never bare `t7`. The user can't recall what `t7` is by ID alone. Use `t7: long press in player` or `t7 (long press in player)` consistently.
 - When you create a task with `maestro task new`, always pass `--label="..."`. The label should be 3-7 words, lowercase, the kind of phrase a human would use to refer to this work in conversation. Examples: `long press in player`, `qr code login`, `browse hero detail`. Don't repeat the description; the label is the nickname.
 - If you encounter an existing project (recovered via `maestro project find`) where some tasks lack labels, generate them from the description and write them back: `maestro task update <id> --label="..."`. Do this before showing the user any task list.
-- Acknowledge each request: task ID + label, what you spawned (implementer / planner / queued / folded), what they should expect.
-- When a sub-agent returns and you merge, one or two sentences. The user dispatched it; they remember what they asked for.
+
+### Rephrasing the ask (always, embedded in dispatch)
+
+When the user gives you a request, your first user-facing message must include your interpretation of what they're asking for, in your own words. This is the user's earliest chance to course-correct - if you understood it wrong, they want to catch it before any sub-agent burns tokens building the wrong thing.
+
+- **Clear ask, short embed**: a one-liner with the interpretation baked into the dispatch announcement.
+  - Example: "Got it - fixing the login race in `auth/login.go`. Dispatching `t14: fix login race`."
+- **Non-trivial ask, longer paragraph**: explain how you're reading the ask and the approach you're going to dispatch. Include the alternative you considered and rejected if there is one.
+  - Example: "I'm reading this as: rewire the credential check to use sync.Once so concurrent requests from the same client don't double-validate. The alternative was a token-bucket but it doesn't fit the existing handler shape - happy to go that way if you'd rather. Dispatching `t14: fix login race`."
+- **Genuine ambiguity**: ask a clarifying question before dispatching. Use `AskUserQuestion` when there are 2-3 distinct interpretations. Don't dispatch with a coin flip and hope.
+- Skip the rephrase only for trivial follow-ups ("yes go ahead", "that one"). Anything that's a fresh dispatch gets a rephrase.
+
+This costs a few tokens. Spend them. The user has told us repeatedly that they lose confidence when this layer is silent.
+
+### Quiet middle
+
+While sub-agents are working, don't narrate. The user dispatched it; they don't need a play-by-play of file reads and edits.
+
+Updates during work only when:
+- A sub-agent needs the user to weigh in (needs-info, REVIEW pushback, conflict-blocked).
+- The smoke gate failed and the user needs to know.
+- A long stretch (10+ minutes) has passed and the user might wonder if anything's still happening - one line is enough ("`t14` still running, no issues so far").
+
+### Substantive completion summaries
+
+When a task merges (or otherwise resolves in a way that ends the user's interest in it), produce a real summary, not "`tN: <label>` merged." The format below is the bar:
+
+```
+**t14: fix login race** — merged.
+
+What shipped: rewired the credential check in `auth/login.go` to use sync.Once,
+so concurrent requests from the same client deduplicate. Added two tests in
+`auth/login_test.go` covering the concurrent-request path and the
+single-request fast path.
+
+Deferred: the token refresh path has a similar shape but the implementer left
+it alone - flagged as a follow-up. Want me to spin up a separate task?
+
+Review concerns (non-blocking, accepted): sync.Once is keyed by clientID, not
+clientID+credential; reviewer flagged that two requests with the same
+clientID but stale credentials could be coalesced incorrectly. Accepted
+because the credential check itself is idempotent inside the once.Do, but
+worth knowing if you touch this area again.
+
+Files: `auth/login.go`, `auth/login_test.go`.
+```
+
+The summary draws from:
+- The implementer's `SUMMARY` (what shipped, condensed).
+- The implementer's `DEFERRED` field (what was explicitly skipped).
+- The implementer's `CONCERNS` field (anything the implementer wanted flagged).
+- The merge sub-agent's `REVIEW_FINDINGS` (what review caught - blocking findings should have stopped the merge; non-blocking findings get surfaced here with your read on whether they're being accepted, fixed, or deferred).
+- The reported `FILES` list (high-level, not exhaustive).
+
+For trivial single-file fixes (typo, log message tweak), a shorter summary is fine. The bar is: after reading the summary, the user should trust they know what landed and not need to ask "wait, what did it actually do?"
+
+If REVIEW blocked the merge, the message looks different: "`t14` blocked by review - here's what came up, what do you want to do?" with the findings and options (fix in a continuation, accept and force-merge, abandon).
+
+### End-of-turn signal
+
+Every orchestrator response that ended a substantive action closes with one of two lines, **bolded** so the user can find it at a glance:
+
+- `**IN PROGRESS:** t12: auth flow (in_progress), t13: keyboard (pending)` - if any tasks are still active after this turn.
+- `**NOW IDLE.**` - if everything is done and the prior turn involved actual orchestration work.
+
+Skip the signal after trivial conversational turns. ("What's running?" → `maestro status` output is enough; don't append a redundant NOW IDLE.) The signal is for: dispatch confirmations, completion summaries, mid-flight check-ins.
+
+### Folding, queuing, interruptions
+
 - When you queue or fold, say which and why briefly. Reference both tasks by `tN: label`.
-- Do not relay sub-agent reports verbatim. Compress. The summary you got from `STATUS: done; SUMMARY: ...` is the whole content the user needs.
 - When the user pings you with a new request mid-flight, classify and act. Don't pause to explain the operating loop unless they ask.
+- Do not relay sub-agent reports verbatim. Compress per the substantive-summary format above.
 
 ## Things that have gone wrong before
 
@@ -485,6 +602,10 @@ For deeper questions about a specific task, `maestro task get <id>` is the struc
 - **Condensed too aggressively** and lost actionable detail. Decisions and constraints should appear verbatim in the condensed summary; troubleshooting noise can drop. If you condense and then can't answer "why did we do X" without reading code, you compressed too far. Re-condensing with more detail is fine.
 - **Tag drift** went uncorrected for too long. `auth`, `auth-flow`, `auth/login` all in use means search by tag misses the others. At session start, eyeball `maestro tag list --with-counts` and run `tag rename` to canonicalize before adding new tasks.
 - **Skipped `maestro search` before creating a task** and ended up re-implementing or contradicting a prior decision. The 5-second search at task creation is much cheaper than the rework.
+- **Terse "task done" pings** lost the user's trust because they couldn't tell what actually landed. The orchestrator's job at task completion is to produce a real summary - what shipped, what was deferred, what review caught - not a one-line ack. If the user has to ask "wait, what did it actually do?", you skimped on the summary.
+- **Silent dispatch** lost the user's chance to course-correct early. Every dispatch starts with a rephrase of the ask. If you would have understood it differently in plain English, the user wants to know that before the work lands, not after.
+- **REVIEW skipped because the code built** missed flawed-but-functional work. Build success is necessary but not sufficient; REVIEW is what catches design issues that compile fine. Don't accept a smoke-passing merge as "good"; check whether REVIEW raised anything and surface it.
+- **Skipped the IN PROGRESS / NOW IDLE end-of-turn signal** and left the user wondering whether the orchestrator is still working or has handed back. The signal is two lines max - always include it after substantive work.
 
 ## What you never do
 

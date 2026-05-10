@@ -105,8 +105,9 @@ type Task struct {
 // log is filterable: report (a sub-agent's final report), exchange (a back-
 // and-forth message), fold (an orchestrator-side refinement injected after
 // spawn), decision (a constraint or call-out worth preserving through
-// condensation), system (CLI-side bookkeeping). Type is optional for
-// backwards compatibility with notes written before this field existed.
+// condensation), review (concerns raised by the review-verify-merge sub-agent
+// or a standalone reviewer), system (CLI-side bookkeeping). Type is optional
+// for backwards compatibility with notes written before this field existed.
 type Note struct {
 	At      time.Time `json:"at"`
 	Source  string    `json:"source"`

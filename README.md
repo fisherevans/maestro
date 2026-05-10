@@ -163,6 +163,26 @@ Notes:
 
 Most commands need a project. Pass `--project=<name>` or set `MAESTRO_PROJECT`. Pass `--json` to most commands for machine-readable output.
 
+## Review, verify, merge
+
+When an implementer reports done, the merge sub-agent doesn't just integrate - it runs three phases:
+
+- **REVIEW**: substantive read of the diff. Flags design issues, missed edge cases, hidden coupling, even when the code is functional. Blocking findings halt the merge; non-blocking findings are bubbled up to the user in the completion summary.
+- **VERIFY**: confirms the implementation actually matches the task description and the implementer's reported summary. Catches "built something subtly different from what was asked" cases.
+- **MERGE**: the existing stash/merge/smoke/cleanup sequence. Only runs if REVIEW and VERIFY both pass.
+
+Findings persist as Notes (`Type=review`) so search and condensation can surface them later. Skill teaches the orchestrator to relay findings to the user verbatim when REVIEW blocks, and to summarize accepted non-blocking concerns in the completion summary.
+
+## Orchestrator-user dialogue
+
+The skill structures every orchestrator turn around three things the user cares about:
+
+- **Rephrase the ask at dispatch** so the user can course-correct before sub-agents burn tokens. Embedded in the same message that announces the spawn ("got it - fixing the login race in auth/login.go. dispatching t14.").
+- **Substantive completion summary** when work merges: what shipped, what was deferred, what review caught, files touched. Not "task done."
+- **End-of-turn signal** every substantive turn closes with `**IN PROGRESS:** ...` (active tasks listed) or `**NOW IDLE.**` (everything handed back). Bolded so the user can find it at a glance.
+
+The middle (file edits, iteration noise) stays out of the user-facing layer. Only actionable items interrupt: REVIEW pushback, smoke failures, needs-info from a sub-agent.
+
 ## Knowledge store
 
 Tasks in maestro are durable. They outlive the session that created them and accumulate into a searchable record of what was asked, what was done, why, and what was decided. The orchestrator uses this:
