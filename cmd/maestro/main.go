@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -51,6 +52,7 @@ Coordination:
 
 Display:
   statusline                 One-line task summary, suitable for a Claude Code statusLine
+  status                     Multi-line snapshot: active tasks + recently merged
 
 Project scope:
   Most commands need a project. Pass --project=<name> or set MAESTRO_PROJECT.
@@ -90,6 +92,8 @@ func run(args []string) error {
 		return cmdWorktree(rest)
 	case "statusline":
 		return cmdStatusline(rest)
+	case "status":
+		return cmdStatus(rest)
 	default:
 		return fmt.Errorf("unknown command %q (run `maestro` for usage)", cmd)
 	}
@@ -1099,6 +1103,135 @@ func cmdStatusline(args []string) error {
 		fmt.Printf("%s: %s\n", name, body)
 	}
 	return nil
+}
+
+// cmdStatus prints a multi-line snapshot of the project: active tasks
+// (sorted by status priority) and the last few merges. Designed to be
+// orchestrator-friendly - tight format, no narrative needed.
+func cmdStatus(args []string) error {
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	project := fs.String("project", "", "project name (defaults to MAESTRO_PROJECT or cwd auto-detect)")
+	lastMerged := fs.Int("last-merged", 3, "how many recently merged tasks to show (0 to omit)")
+	asJSON := fs.Bool("json", false, "JSON output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	name := resolveStatuslineProject(*project)
+	if name == "" {
+		return errors.New("no project specified and none auto-detected (pass --project or set MAESTRO_PROJECT)")
+	}
+	store, err := maestro.NewStore(name)
+	if err != nil {
+		return err
+	}
+	st, err := store.Load()
+	if err != nil {
+		return err
+	}
+
+	var active, merged []*maestro.Task
+	for _, t := range st.Tasks {
+		if t.Status.IsActive() {
+			active = append(active, t)
+		} else if t.Status == maestro.StatusMerged {
+			merged = append(merged, t)
+		}
+	}
+	sort.Slice(active, func(i, j int) bool {
+		oi, oj := statusOrder(active[i].Status), statusOrder(active[j].Status)
+		if oi != oj {
+			return oi < oj
+		}
+		return active[i].UpdatedAt.Before(active[j].UpdatedAt)
+	})
+	sort.Slice(merged, func(i, j int) bool {
+		return merged[i].UpdatedAt.After(merged[j].UpdatedAt)
+	})
+	if len(merged) > *lastMerged {
+		merged = merged[:*lastMerged]
+	}
+
+	if *asJSON {
+		out := map[string]any{
+			"project": name,
+			"active":  taskSummariesForStatus(active),
+		}
+		if *lastMerged > 0 {
+			out["recently_merged"] = taskSummariesForStatus(merged)
+		}
+		return writeJSON(os.Stdout, out)
+	}
+
+	fmt.Println(name)
+	fmt.Println()
+	if len(active) == 0 {
+		fmt.Println("(no active tasks)")
+	} else {
+		for _, t := range active {
+			fmt.Printf("  %-4s %-16s %-50s (%s)\n", t.ID, t.Status, taskListLabel(t), humanizeAge(time.Since(t.UpdatedAt)))
+		}
+	}
+	if *lastMerged > 0 && len(merged) > 0 {
+		fmt.Println()
+		fmt.Printf("Recently merged (last %d):\n", len(merged))
+		for _, t := range merged {
+			fmt.Printf("  %-4s %-50s (%s ago)\n", t.ID, taskListLabel(t), humanizeAge(time.Since(t.UpdatedAt)))
+		}
+	}
+	return nil
+}
+
+func taskSummariesForStatus(tasks []*maestro.Task) []map[string]any {
+	out := make([]map[string]any, 0, len(tasks))
+	for _, t := range tasks {
+		out = append(out, map[string]any{
+			"id":         t.ID,
+			"label":      t.Label,
+			"status":     t.Status,
+			"updated_at": t.UpdatedAt,
+			"age":        humanizeAge(time.Since(t.UpdatedAt)),
+		})
+	}
+	return out
+}
+
+// statusOrder gives a deterministic ranking for active task statuses so
+// the most-actionable rows surface first in `status` output.
+func statusOrder(s maestro.TaskStatus) int {
+	switch s {
+	case maestro.StatusInProgress:
+		return 0
+	case maestro.StatusAwaitingReview:
+		return 1
+	case maestro.StatusBlocked:
+		return 2
+	case maestro.StatusPending:
+		return 3
+	}
+	return 9
+}
+
+// humanizeAge renders a duration as "12s", "3m", "2h15m", "4d". Designed
+// to fit in a terminal column without truncation.
+func humanizeAge(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	if d < 24*time.Hour {
+		h := int(d.Hours())
+		m := int(d.Minutes()) % 60
+		if m == 0 {
+			return fmt.Sprintf("%dh", h)
+		}
+		return fmt.Sprintf("%dh%dm", h, m)
+	}
+	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
 // resolveStatuslineProject is the lenient version of resolveProject.

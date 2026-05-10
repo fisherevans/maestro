@@ -130,6 +130,7 @@ maestro worktree cleanup <id> [--force]
 maestro worktree restore <id>
 maestro project sweep [--older-than=7d] [--status=merged,abandoned] [--apply] [--keep-worktrees]
 maestro statusline [--project=<name>] [--no-project-name]
+maestro status [--project=<name>] [--last-merged=N]
 ```
 
 `worktree cleanup` removes the directory but keeps the task record so SendMessage to the original sub-agent still works for follow-up questions. `task delete` removes the record entirely (and the worktree by default). `project sweep` is the bulk version, dry-run by default; suitable for cron or a between-sessions tidy-up.
@@ -137,6 +138,25 @@ maestro statusline [--project=<name>] [--no-project-name]
 `project find` is how the orchestrator notices it's been in a repo before. `project rename` requires no active worktrees (worktree paths are absolute and would break). For milestones / phase boundaries, just `maestro init` a new project name pointing at the same repo - multiple projects per repo is supported.
 
 Most commands need a project. Pass `--project=<name>` or set `MAESTRO_PROJECT`. Pass `--json` to most commands for machine-readable output.
+
+## Status snapshot
+
+`maestro status` prints a multi-line snapshot of active tasks (sorted by status priority, with ages) and the last few merges. The format is tight enough that the orchestrator can run it and let the output stand without re-narrating in prose, which keeps status checks cheap on context.
+
+```
+jellybean
+
+  t8   in_progress      on-screen keyboard for library search       (2m)
+  t9   pending          auto-off override fix                       (15s)
+  t10  blocked          admin override modal accessibility          (5m)
+
+Recently merged (last 3):
+  t7   playback reliability cluster                                 (4m ago)
+  t6   nextup into cw resolver                                      (8m ago)
+  t5   browse hero detail                                           (12m ago)
+```
+
+Project resolution: `--project` flag, then `MAESTRO_PROJECT`, then cwd auto-detect. `--last-merged=N` controls how many recent merges to show (default 3, `0` to omit). `--json` for machine-readable output.
 
 ## Statusline (optional)
 

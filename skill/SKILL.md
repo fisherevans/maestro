@@ -331,9 +331,11 @@ When you queue, tell the user: "queued behind tN" so they know what's blocking i
 
 ## State
 
-Use `maestro task list` and `maestro task get <id>` for state. Do not maintain a parallel mental list. Do not use TodoWrite-style tools to duplicate maestro's tracking.
+Use `maestro task list`, `maestro task get <id>`, and `maestro status` for state. Do not maintain a parallel mental list. Do not use TodoWrite-style tools to duplicate maestro's tracking.
 
-When the user asks for status, summarize what `maestro task list` says in plain English. Don't paste the JSON.
+When the user asks for status ("what's running?", "where are we?", "status?"), run `maestro status` and let the output stand. The format is already tight: active tasks with status/label/age, plus the last few merges. **Don't re-narrate it in prose.** The user sees the tool result rendered in Claude Code's UI; your job is to add only the things the structured output can't say (an apology for a stale task, a callout that t9 has been blocked for 30 minutes and might need their input, etc.).
+
+For deeper questions about a specific task, `maestro task get <id>` is the structured fallback. For "how does this work?" questions on completed tasks, route to the original implementer via SendMessage (see "Follow-up questions on completed work").
 
 ## Communication with the user
 
