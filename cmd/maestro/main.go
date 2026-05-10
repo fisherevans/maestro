@@ -27,6 +27,9 @@ Project commands:
   init                       Initialize a project (creates ~/.maestro/<project>/)
   project list               List all initialized projects
   project show               Show current project config
+  project find --repo=<path> List projects whose repo matches <path>
+  project update             Update smoke gate or default base branch
+  project rename --to=<name> Rename the current project (requires no active worktrees)
 
 Task commands:
   task new                   Create a task and worktree
@@ -124,6 +127,7 @@ func cmdInit(args []string) error {
 	project := fs.String("project", "", "project name (required, or set MAESTRO_PROJECT)")
 	repo := fs.String("repo", "", "absolute path to the git repo (default: detect from cwd)")
 	base := fs.String("base", "", "default base branch for new tasks (default: current branch in repo)")
+	smokeGate := fs.String("smoke-gate", "", "command(s) to verify a merge (e.g. 'go build ./... && go test ./...')")
 	force := fs.Bool("force", false, "overwrite existing project config")
 	asJSON := fs.Bool("json", false, "JSON output")
 	if err := fs.Parse(args); err != nil {
@@ -182,6 +186,7 @@ func cmdInit(args []string) error {
 			Name:           name,
 			RepoPath:       repoPath,
 			DefaultBase:    baseBranch,
+			SmokeGate:      *smokeGate,
 			NextTaskNumber: 1,
 		},
 	}
@@ -213,7 +218,7 @@ func resolveRepoPath(flagVal string) (string, error) {
 
 func cmdProject(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: maestro project <list|show>")
+		return errors.New("usage: maestro project <list|show|find|update|rename>")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -221,6 +226,12 @@ func cmdProject(args []string) error {
 		return cmdProjectList(rest)
 	case "show":
 		return cmdProjectShow(rest)
+	case "find":
+		return cmdProjectFind(rest)
+	case "update":
+		return cmdProjectUpdate(rest)
+	case "rename":
+		return cmdProjectRename(rest)
 	default:
 		return fmt.Errorf("unknown subcommand: project %s", sub)
 	}
@@ -270,8 +281,111 @@ func printProject(w io.Writer, p *maestro.Project, asJSON bool) error {
 	fmt.Fprintf(w, "name: %s\n", p.Name)
 	fmt.Fprintf(w, "repo_path: %s\n", p.RepoPath)
 	fmt.Fprintf(w, "default_base: %s\n", p.DefaultBase)
+	if p.SmokeGate != "" {
+		fmt.Fprintf(w, "smoke_gate: %s\n", p.SmokeGate)
+	}
 	fmt.Fprintf(w, "next_task_number: %d\n", p.NextTaskNumber)
 	return nil
+}
+
+func cmdProjectFind(args []string) error {
+	fs := flag.NewFlagSet("project find", flag.ContinueOnError)
+	repo := fs.String("repo", "", "repo path to look up (default: cwd)")
+	asJSON := fs.Bool("json", false, "JSON output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	repoPath, err := resolveRepoPath(*repo)
+	if err != nil {
+		return err
+	}
+	matches, err := maestro.FindProjectsByRepo(repoPath)
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		return writeJSON(os.Stdout, matches)
+	}
+	if len(matches) == 0 {
+		fmt.Println("(no match)")
+		return nil
+	}
+	for _, m := range matches {
+		fmt.Printf("%s\t%s\n", m.Name, m.Updated.Format(time.RFC3339))
+	}
+	return nil
+}
+
+func cmdProjectUpdate(args []string) error {
+	fs := flag.NewFlagSet("project update", flag.ContinueOnError)
+	project := fs.String("project", "", "project name")
+	smokeGate := fs.String("smoke-gate", "", "set smoke gate command(s)")
+	clearSmoke := fs.Bool("clear-smoke-gate", false, "clear the smoke gate")
+	defaultBase := fs.String("default-base", "", "set the default base branch for new tasks")
+	asJSON := fs.Bool("json", false, "JSON output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	store, st, err := loadState(*project)
+	if err != nil {
+		return err
+	}
+	changed := false
+	if *clearSmoke {
+		st.Project.SmokeGate = ""
+		changed = true
+	} else if *smokeGate != "" {
+		st.Project.SmokeGate = *smokeGate
+		changed = true
+	}
+	if *defaultBase != "" {
+		g := &maestro.Git{RepoPath: st.Project.RepoPath}
+		if !g.BranchExists(*defaultBase) {
+			return fmt.Errorf("branch %q does not exist in %s", *defaultBase, st.Project.RepoPath)
+		}
+		st.Project.DefaultBase = *defaultBase
+		changed = true
+	}
+	if !changed {
+		return errors.New("nothing to update; pass --smoke-gate, --default-base, or --clear-smoke-gate")
+	}
+	if err := store.Save(st); err != nil {
+		return err
+	}
+	return printProject(os.Stdout, &st.Project, *asJSON)
+}
+
+func cmdProjectRename(args []string) error {
+	fs := flag.NewFlagSet("project rename", flag.ContinueOnError)
+	project := fs.String("project", "", "current project name")
+	to := fs.String("to", "", "new project name (required)")
+	asJSON := fs.Bool("json", false, "JSON output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*to) == "" {
+		return errors.New("--to is required")
+	}
+	store, _, err := loadState(*project)
+	if err != nil {
+		return err
+	}
+	hasWT, err := store.HasActiveWorktrees()
+	if err != nil {
+		return err
+	}
+	if hasWT {
+		return errors.New("cannot rename: project has active worktrees. Run `maestro task list --status=active` and clean up first (worktree paths are absolute and would break on rename)")
+	}
+	newStore, err := store.Rename(*to)
+	if err != nil {
+		return err
+	}
+	st, err := newStore.Load()
+	if err != nil {
+		return err
+	}
+	return printProject(os.Stdout, &st.Project, *asJSON)
 }
 
 // ---- task ----

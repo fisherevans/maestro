@@ -49,12 +49,13 @@ type State struct {
 	Updated time.Time `json:"updated"`
 }
 
-// Project holds the immutable-ish config for a maestro project: which repo
-// it tracks and what branch new tasks default to.
+// Project holds the config for a maestro project: which repo it tracks,
+// what branch new tasks default to, and the smoke gate to run after merges.
 type Project struct {
 	Name           string `json:"name"`
 	RepoPath       string `json:"repo_path"`
 	DefaultBase    string `json:"default_base"`
+	SmokeGate      string `json:"smoke_gate,omitempty"`
 	NextTaskNumber int    `json:"next_task_number"`
 }
 
@@ -333,4 +334,114 @@ func ListProjects() ([]string, error) {
 	}
 	sort.Strings(names)
 	return names, nil
+}
+
+// ProjectMatch is one row in a `project find --repo` result. Updated is the
+// state file's last-modified time, used for sorting most-recent-first so the
+// orchestrator can pick the obvious candidate when there are several.
+type ProjectMatch struct {
+	Name      string    `json:"name"`
+	RepoPath  string    `json:"repo_path"`
+	Updated   time.Time `json:"updated"`
+	SmokeGate string    `json:"smoke_gate,omitempty"`
+}
+
+// FindProjectsByRepo returns every project whose RepoPath matches repoPath,
+// most-recently-updated first. The path is canonicalized via filepath.Abs +
+// EvalSymlinks before comparing so /tmp/foo and /private/tmp/foo match on
+// macOS where /tmp is a symlink.
+func FindProjectsByRepo(repoPath string) ([]ProjectMatch, error) {
+	target, err := canonicalize(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	names, err := ListProjects()
+	if err != nil {
+		return nil, err
+	}
+	var matches []ProjectMatch
+	for _, name := range names {
+		s, err := NewStore(name)
+		if err != nil {
+			continue
+		}
+		st, err := s.Load()
+		if err != nil {
+			continue
+		}
+		canon, err := canonicalize(st.Project.RepoPath)
+		if err != nil {
+			continue
+		}
+		if canon == target {
+			matches = append(matches, ProjectMatch{
+				Name:      st.Project.Name,
+				RepoPath:  st.Project.RepoPath,
+				Updated:   st.Updated,
+				SmokeGate: st.Project.SmokeGate,
+			})
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].Updated.After(matches[j].Updated)
+	})
+	return matches, nil
+}
+
+func canonicalize(p string) (string, error) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	if eval, err := filepath.EvalSymlinks(abs); err == nil {
+		return eval, nil
+	}
+	return abs, nil
+}
+
+// HasActiveWorktrees reports whether the project's wt/ dir contains any
+// task subdirectories. Used as a guardrail for `project rename`, which would
+// invalidate git's absolute-path worktree records.
+func (s *Store) HasActiveWorktrees() (bool, error) {
+	entries, err := os.ReadDir(s.WorktreesDir())
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// Rename moves the project directory and updates the embedded name. Caller
+// is responsible for refusing to call this when there are active worktrees;
+// see HasActiveWorktrees.
+func (s *Store) Rename(newName string) (*Store, error) {
+	if err := validateProjectName(newName); err != nil {
+		return nil, err
+	}
+	newStore, err := NewStore(newName)
+	if err != nil {
+		return nil, err
+	}
+	if newStore.Exists() {
+		return nil, fmt.Errorf("target project %q already exists", newName)
+	}
+	if err := os.Rename(s.ProjectDir(), newStore.ProjectDir()); err != nil {
+		return nil, fmt.Errorf("rename project dir: %w", err)
+	}
+	st, err := newStore.Load()
+	if err != nil {
+		return nil, err
+	}
+	st.Project.Name = newName
+	if err := newStore.Save(st); err != nil {
+		return nil, err
+	}
+	return newStore, nil
 }

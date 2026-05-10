@@ -15,13 +15,39 @@ You have a CLI helper called `maestro` that holds task state and creates worktre
 
 ## Setup at session start
 
-Before doing anything else, ensure a maestro project exists for the user's repo.
+Before doing anything else, identify or create the maestro project for the user's repo.
 
-1. Identify the repo. Default: `git -C $(pwd) rev-parse --show-toplevel`.
-2. Pick a project name. Default: the basename of the repo dir, lowercased, alphanumerics/dash/underscore only. Confirm with the user if ambiguous.
-3. Run `maestro init --project=<name> --repo=<absolute-repo-path> [--base=<branch>]`. Omit `--base` to use the current branch in the repo. `init` is idempotent without `--force`; if the project exists, it just prints config.
-4. Set `MAESTRO_PROJECT=<name>` in your shell once via `export MAESTRO_PROJECT=<name>` (Bash with run_in_background=false). Every subsequent `maestro` call uses it. If you must, pass `--project=<name>` explicitly each time.
-5. Ask the user for the project's smoke gate (build/test commands). Remember it. You'll run it after merges. If they don't have one, skip silently.
+1. Identify the repo: `git -C $(pwd) rev-parse --show-toplevel`.
+2. Look up existing projects for this repo: `maestro project find --repo=<repo-path>`.
+   - **One match**: that's your project. Set `MAESTRO_PROJECT` and run `maestro project show` to recover the smoke gate, default base, and last-activity timestamp. Run `maestro task list` to see what was done before. Greet the user briefly with what you remember (e.g. "Working on `<project>` again. Last activity was `<date>`. <N> tasks merged previously.").
+   - **Multiple matches**: ask the user which to use, or whether they want to start a new project for a new milestone. Show them the names and last-updated dates.
+   - **No match**: continue to step 3 to initialize.
+3. Pick a project name. Default to the basename of the repo dir, lowercased, alphanumerics/dash/underscore only. Confirm with the user if it's ambiguous or if they're at a milestone boundary (see "Milestones" below).
+4. Detect the smoke gate before calling init. Read these files (in order, stop when you have enough):
+   - `CLAUDE.md` (root and any `.claude/` configs) - often has explicit "run X to test" instructions.
+   - `README.md` - look for a "testing" or "development" section.
+   - Build manifests: `Makefile`, `Taskfile.yml`, `justfile`, `package.json` (scripts), `Cargo.toml`, `go.mod` (default to `go build ./... && go test ./...`), `pyproject.toml`.
+   - `.github/workflows/*.yml` - whatever CI runs is usually the right gate, minus the slow integration tests.
+   Propose what you found to the user in one line ("smoke gate: `make test`, sound right?"). If you can't find anything obvious, ask. Don't ask if you're confident.
+5. Initialize: `maestro init --project=<name> --repo=<absolute-repo-path> [--base=<branch>] [--smoke-gate="<command>"]`. Omit `--base` to use the current branch in the repo. `init` is idempotent without `--force`.
+6. Set `MAESTRO_PROJECT=<name>` once via Bash (`export MAESTRO_PROJECT=<name>`). Every subsequent `maestro` call uses it.
+
+If the smoke gate becomes wrong later (project added a new build step, etc.), update it: `maestro project update --smoke-gate="<new>"`.
+
+## Milestones and project switching
+
+Project name is a logical scope, not a 1:1 binding to the repo. Multiple maestro projects can point at the same repo with separate task lists, smoke gates, and histories.
+
+Use this when the user signals a milestone or a clean break:
+- Major version cut. Old project preserves its task history; new project tracks the next phase.
+- Switching focus to an unrelated workstream in the same repo (e.g. "now I'm doing the auth rewrite, separate from the dashboard work").
+- Wanting a clean task counter (t1, t2, ...) for psychological tidiness at a checkpoint.
+
+Two ways to do it:
+- **Fork (preserve old)**: `maestro init --project=<new-name>` while in the same repo. Old project stays available via `maestro project list` and `project find`. Switch by exporting a different `MAESTRO_PROJECT`.
+- **Rename (in place)**: `maestro project rename --to=<new-name>`. Only works when there are no active worktrees. Useful if you just want to relabel and the original name stopped fitting.
+
+When the user says something like "let's start fresh" or "milestone reached" or "we're done with that phase," ask whether they want to fork or rename, and proceed.
 
 ## What the CLI gives you
 

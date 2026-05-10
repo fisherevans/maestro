@@ -84,9 +84,12 @@ State lives at `~/.maestro/<project>/state.json`. Worktrees at `~/.maestro/<proj
 ## Commands
 
 ```
-maestro init --repo=<path> [--base=<branch>] [--force]
+maestro init --repo=<path> [--base=<branch>] [--smoke-gate="..."] [--force]
 maestro project list
 maestro project show
+maestro project find --repo=<path>
+maestro project update [--smoke-gate=...] [--default-base=...] [--clear-smoke-gate]
+maestro project rename --to=<name>
 maestro task new --description="..." [--base=<branch>]
 maestro task list [--status=active|pending|in_progress|...]
 maestro task get <id> [--json]
@@ -98,6 +101,8 @@ maestro conflicts <id>
 maestro worktree path <id>
 maestro worktree cleanup <id> [--force]
 ```
+
+`project find` is how the orchestrator notices it's been in a repo before. `project rename` requires no active worktrees (worktree paths are absolute and would break). For milestones / phase boundaries, just `maestro init` a new project name pointing at the same repo - multiple projects per repo is supported.
 
 Most commands need a project. Pass `--project=<name>` or set `MAESTRO_PROJECT`. Pass `--json` to most commands for machine-readable output.
 
