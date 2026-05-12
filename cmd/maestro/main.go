@@ -742,6 +742,118 @@ func cmdTaskGet(args []string) error {
 	return printTask(os.Stdout, t, *asJSON)
 }
 
+// reportHelpHint is appended to every validation error so agents see the
+// recovery path without having to guess that --schema exists.
+const reportHelpHint = "Run 'maestro task report --schema' to see the full schema and worked examples."
+
+// reportSchemaDoc is the self-documentation an agent gets back from
+// 'maestro task report --schema'. Kept here (not in a separate file) so
+// the binary stays self-contained. Uses single quotes around code
+// references instead of backticks so the Go raw string stays intact.
+const reportSchemaDoc = `maestro task report - file a structured JSON report on a task.
+
+USAGE
+  maestro task report <task-id> [--source=agent] [--file=path] < report.json
+  maestro task report --schema    # print this help
+
+INPUT
+  A JSON object read from stdin (or --file). Unknown top-level fields are
+  rejected so typos surface as errors instead of silent drops.
+
+REQUIRED FIELDS
+  status (string)
+    Recommended values:
+      Implementer side:  "done" | "needs-info" | "blocked"
+      Merge sub-agent:   "merged" | "review-blocked" | "verify-failed" |
+                         "smoke-failed" | "conflict-blocked" |
+                         "implementer-stale" | "error"
+  summary (string)
+    2-4 sentence outcome. The PR-description-shaped writeup the
+    orchestrator uses to compose the user-facing completion summary.
+
+OPTIONAL FIELDS (implementer side)
+  files     ([]string)   files actually modified, paths relative to worktree
+  commit    (string)     SHA of the final commit on the task branch
+  deferred  ([]string)   items explicitly skipped or out-of-scope, with rationale
+  concerns  ([]string)   things to flag to the orchestrator / user
+  notes     (string)     free-form additional context
+
+OPTIONAL FIELDS (merge sub-agent side)
+  merge_commit     (string)   SHA of the merge commit (when status=merged)
+  review_findings  ([]object) see schema below
+  verify_notes     (string)   explanation when status=verify-failed
+  smoke_tail       (string)   last ~30 lines of failing smoke output
+
+REVIEW FINDING OBJECT
+  {
+    "severity": "blocking" | "non-blocking",   // required, enum-validated
+    "title":    "short one-line summary",      // required
+    "details":  "what's wrong and what you'd do instead",  // optional
+    "file":     "path/relative/to/repo",       // optional
+    "line":     84                              // optional integer
+  }
+
+EXAMPLE (implementer)
+  maestro task report t14 <<'EOF'
+  {
+    "status": "done",
+    "summary": "rewired credential check to use sync.Once for client dedup.",
+    "files": ["auth/login.go", "auth/login_test.go"],
+    "commit": "deadbeef12345",
+    "deferred": ["token refresh path has the same shape - left for a follow-up"],
+    "concerns": ["sync.Once keyed by clientID only; stale credentials could coalesce"]
+  }
+  EOF
+
+EXAMPLE (merge sub-agent, successful merge with one non-blocking finding)
+  maestro task report t14 <<'EOF'
+  {
+    "status": "merged",
+    "summary": "merged after review found one non-blocking concern.",
+    "merge_commit": "abc1234567",
+    "review_findings": [
+      {
+        "severity": "non-blocking",
+        "title": "consider keying by clientID+credential hash",
+        "file": "auth/login.go",
+        "line": 84,
+        "details": "tightens the dedup contract; not required for correctness"
+      }
+    ]
+  }
+  EOF
+
+EXAMPLE (merge sub-agent, smoke gate failed)
+  maestro task report t14 <<'EOF'
+  {
+    "status": "smoke-failed",
+    "summary": "tsc failed: TS2304 cannot find name 'qrcode'.",
+    "smoke_tail": "...last 30 lines of npx tsc output..."
+  }
+  EOF
+
+NOTES
+  - Side effects: when present, "commit" mirrors to Task.FinalCommit and
+    "summary" mirrors to Task.Summary (when previously empty), so
+    'maestro status' and 'task list' show useful info without re-parsing
+    the latest Note.
+  - The report is stored as a Note with type=report. Multiple reports per
+    task are kept as a chronological audit trail; the latest is "current."
+  - Same schema serves both implementers and merge sub-agents; each fills
+    the fields that apply to its role.`
+
+// hasFlag is a loose pre-check for an argv-style boolean flag without
+// running the full FlagSet, used so --schema works without requiring a
+// positional task ID.
+func hasFlag(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
+
 // cmdTaskReport reads a JSON Report from stdin (or --file), validates it,
 // canonicalizes it, and appends a typed Note (type=report) to the task. This
 // is the structured replacement for the legacy `task update --note-content-stdin`
@@ -753,7 +865,19 @@ func cmdTaskReport(args []string) error {
 	project := fs.String("project", "", "project name")
 	source := fs.String("source", "agent", "Note source (agent|orchestrator|user|system)")
 	fileFlag := fs.String("file", "", "read JSON from a file instead of stdin")
+	schemaFlag := fs.Bool("schema", false, "print the report JSON schema with worked examples, then exit")
 	asJSON := fs.Bool("json", false, "JSON output (echo back the stored report)")
+
+	// `--schema` is a discoverability flag for agents: no task ID required.
+	// Parse loosely so `maestro task report --schema` works without a
+	// positional, but still detect the flag if it appears alongside an ID.
+	if hasFlag(args, "--schema") || hasFlag(args, "-schema") {
+		_ = fs.Parse(args)
+		fmt.Println(reportSchemaDoc)
+		_ = schemaFlag // referenced
+		return nil
+	}
+
 	id, err := parseFlagsWithID(fs, args)
 	if err != nil {
 		return err
@@ -772,17 +896,17 @@ func cmdTaskReport(args []string) error {
 		}
 	}
 	if len(bytes.TrimSpace(raw)) == 0 {
-		return errors.New("no report body provided on stdin (or --file)")
+		return fmt.Errorf("no report body provided on stdin (or --file). %s", reportHelpHint)
 	}
 
 	var report maestro.Report
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&report); err != nil {
-		return fmt.Errorf("invalid JSON report: %w", err)
+		return fmt.Errorf("invalid JSON report: %w. %s", err, reportHelpHint)
 	}
 	if err := report.Validate(); err != nil {
-		return fmt.Errorf("report failed validation: %w", err)
+		return fmt.Errorf("report failed validation: %w. %s", err, reportHelpHint)
 	}
 
 	canonical, err := json.MarshalIndent(&report, "", "  ")
