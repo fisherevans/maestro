@@ -210,6 +210,45 @@ details summary::before { content: "▸  "; color: var(--fg-muted); font-size: 1
 details[open] summary::before { content: "▾  "; }
 .h3-inline { font-size: 16px; font-weight: 600; }
 
+/* Active-work view: each active session is its own panel with the session
+   header at top and the session's active tasks nested below as a sub-table.
+   Replaces the prior two-table "active sessions" + "active tasks" split. */
+.session-group {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 10px 0;
+  overflow: hidden;
+}
+.session-group-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: baseline;
+  padding: 10px 14px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 13.5px;
+}
+.session-group-header:hover { background: #f0eee5; }
+.session-group-id { font-size: 14px; }
+.session-group-name { color: var(--fg); }
+.session-group-empty { padding: 10px 14px; margin: 0; font-size: 13px; }
+table.rows.nested {
+  border: none;
+  border-radius: 0;
+  margin: 0;
+}
+table.rows.nested thead th {
+  background: transparent;
+  font-size: 11px;
+  padding: 6px 14px;
+}
+table.rows.nested tbody td { padding: 6px 14px; }
+table.rows.nested tbody tr:last-child td { border-bottom: none; }
+p.small { font-size: 12.5px; margin: 6px 0 12px; }
+
 /* Slim task header: prominent ID/label/status, supporting metadata as a
    single inline line, description gets weight. Technical details (commits,
    paths, agent ID) go into the collapsible Technical details section so

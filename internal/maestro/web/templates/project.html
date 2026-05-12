@@ -23,37 +23,52 @@
     </dl>
   </section>
 
-  {{if .ActiveSessions}}
+  {{if .ActiveGroups}}
   <section>
-    <h3>Active sessions</h3>
-    <table class="rows">
-      <thead><tr><th>ID</th><th>Name</th><th>Started</th><th>Tasks</th></tr></thead>
-      <tbody>
-        {{range .ActiveSessions}}
-        <tr data-href="/project/{{$.Project.Name}}/session/{{.Session.ID}}">
-          <td><a href="/project/{{$.Project.Name}}/session/{{.Session.ID}}">{{.Session.ID}}</a></td>
-          <td>{{if .Session.Name}}{{.Session.Name}}{{else}}<span class="muted">(unnamed)</span>{{end}}</td>
-          <td title="{{rfc3339 .Session.StartedAt}}">{{ago .Session.StartedAt}}</td>
-          <td>{{.TaskN}}</td>
-        </tr>
-        {{end}}
-      </tbody>
-    </table>
+    <h3>Active work</h3>
+    {{range .ActiveGroups}}
+    <div class="session-group">
+      <header class="session-group-header" data-href="/project/{{$.Project.Name}}/session/{{.Session.ID}}">
+        <a class="session-group-id" href="/project/{{$.Project.Name}}/session/{{.Session.ID}}"><strong>{{.Session.ID}}</strong></a>
+        {{if .Session.Name}}<span class="session-group-name">{{.Session.Name}}</span>{{end}}
+        <span class="muted">· started <span title="{{rfc3339 .Session.StartedAt}}">{{ago .Session.StartedAt}}</span></span>
+        <span class="muted">· {{len .Active}} active</span>
+      </header>
+      {{if .Active}}
+      <table class="rows nested">
+        <thead><tr><th>ID</th><th>Status</th><th>Label</th><th>Tags</th><th>Updated</th></tr></thead>
+        <tbody>
+          {{range .Active}}
+          <tr data-href="/project/{{$.Project.Name}}/task/{{.ID}}">
+            <td><a href="/project/{{$.Project.Name}}/task/{{.ID}}">{{.ID}}</a></td>
+            <td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td>
+            <td>{{if .Label}}{{.Label}}{{else}}<span class="muted">(no label)</span>{{end}}</td>
+            <td class="muted">{{join .Tags ", "}}</td>
+            <td title="{{rfc3339 .UpdatedAt}}">{{ago .UpdatedAt}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      {{else}}
+      <p class="session-group-empty muted">No active tasks in this session.</p>
+      {{end}}
+    </div>
+    {{end}}
   </section>
   {{end}}
 
-  {{if .ActiveTasks}}
+  {{if .OrphanActive}}
   <section>
-    <h3>Active tasks ({{len .ActiveTasks}})</h3>
+    <h3>Active tasks without a session <span class="muted">(legacy)</span></h3>
+    <p class="muted small">Created before sessions were required. New tasks always belong to a session via <code>maestro session start</code> + <code>MAESTRO_SESSION</code>.</p>
     <table class="rows">
-      <thead><tr><th>ID</th><th>Status</th><th>Label</th><th>Session</th><th>Tags</th><th>Updated</th></tr></thead>
+      <thead><tr><th>ID</th><th>Status</th><th>Label</th><th>Tags</th><th>Updated</th></tr></thead>
       <tbody>
-        {{range .ActiveTasks}}
+        {{range .OrphanActive}}
         <tr data-href="/project/{{$.Project.Name}}/task/{{.ID}}">
           <td><a href="/project/{{$.Project.Name}}/task/{{.ID}}">{{.ID}}</a></td>
           <td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td>
           <td>{{if .Label}}{{.Label}}{{else}}<span class="muted">(no label)</span>{{end}}</td>
-          <td>{{if .Session}}<a href="/project/{{$.Project.Name}}/session/{{.Session}}">{{.Session}}</a>{{else}}<span class="muted">-</span>{{end}}</td>
           <td class="muted">{{join .Tags ", "}}</td>
           <td title="{{rfc3339 .UpdatedAt}}">{{ago .UpdatedAt}}</td>
         </tr>

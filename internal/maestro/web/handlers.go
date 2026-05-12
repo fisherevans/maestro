@@ -69,13 +69,21 @@ func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 // projectData is the view model for a single project page.
 type projectData struct {
-	Project        *maestro.Project
-	State          *maestro.State
-	ActiveSessions []sessionRow
-	PastSessions   []sessionRow
-	ActiveTasks    []*maestro.Task
-	RecentMerged   []*maestro.Task
-	Tags           []tagCount
+	Project       *maestro.Project
+	State         *maestro.State
+	ActiveGroups  []sessionGroup // active sessions with their active tasks nested inside
+	OrphanActive  []*maestro.Task // active tasks not tied to any active session (legacy data)
+	PastSessions  []sessionRow
+	RecentMerged  []*maestro.Task
+	Tags          []tagCount
+}
+
+// sessionGroup is one unit of the "Active work" view: a session header + the
+// active tasks belonging to it. Sessions with no active tasks still render
+// (with a "no active tasks" placeholder) so condensation status stays visible.
+type sessionGroup struct {
+	Session *maestro.Session
+	Active  []*maestro.Task
 }
 
 type sessionRow struct {
@@ -102,28 +110,60 @@ func (s *server) handleProject(w http.ResponseWriter, r *http.Request) {
 		Tags:    sortedTagCounts(st.AllTags()),
 	}
 
+	// Build a map for quick "is this session active?" lookups; sessions that
+	// don't exist or have been condensed both fall through to the orphan path.
+	activeSessionMap := make(map[string]*maestro.Session)
 	for _, sess := range st.Sessions {
-		row := sessionRow{Session: sess, TaskN: len(st.TasksInSession(sess.ID))}
 		if sess.EndedAt.IsZero() {
-			view.ActiveSessions = append(view.ActiveSessions, row)
-		} else {
-			view.PastSessions = append(view.PastSessions, row)
+			activeSessionMap[sess.ID] = sess
 		}
 	}
-	sort.Slice(view.ActiveSessions, func(i, j int) bool {
-		return view.ActiveSessions[i].Session.StartedAt.After(view.ActiveSessions[j].Session.StartedAt)
+
+	// Bucket active tasks by their active session. Sessionless tasks (legacy)
+	// and tasks whose session has been condensed land in OrphanActive.
+	activeTasksBySession := make(map[string][]*maestro.Task)
+	for _, t := range st.Tasks {
+		if !t.Status.IsActive() {
+			continue
+		}
+		if t.Session == "" {
+			view.OrphanActive = append(view.OrphanActive, t)
+			continue
+		}
+		if _, ok := activeSessionMap[t.Session]; !ok {
+			view.OrphanActive = append(view.OrphanActive, t)
+			continue
+		}
+		activeTasksBySession[t.Session] = append(activeTasksBySession[t.Session], t)
+	}
+	for sid := range activeTasksBySession {
+		tasks := activeTasksBySession[sid]
+		sort.Slice(tasks, func(i, j int) bool {
+			return tasks[i].UpdatedAt.After(tasks[j].UpdatedAt)
+		})
+		activeTasksBySession[sid] = tasks
+	}
+	sort.Slice(view.OrphanActive, func(i, j int) bool {
+		return view.OrphanActive[i].UpdatedAt.After(view.OrphanActive[j].UpdatedAt)
+	})
+
+	// Assemble active session groups, sorted by session start desc.
+	for _, sess := range st.Sessions {
+		if !sess.EndedAt.IsZero() {
+			row := sessionRow{Session: sess, TaskN: len(st.TasksInSession(sess.ID))}
+			view.PastSessions = append(view.PastSessions, row)
+			continue
+		}
+		view.ActiveGroups = append(view.ActiveGroups, sessionGroup{
+			Session: sess,
+			Active:  activeTasksBySession[sess.ID],
+		})
+	}
+	sort.Slice(view.ActiveGroups, func(i, j int) bool {
+		return view.ActiveGroups[i].Session.StartedAt.After(view.ActiveGroups[j].Session.StartedAt)
 	})
 	sort.Slice(view.PastSessions, func(i, j int) bool {
 		return view.PastSessions[i].Session.EndedAt.After(view.PastSessions[j].Session.EndedAt)
-	})
-
-	for _, t := range st.Tasks {
-		if t.Status.IsActive() {
-			view.ActiveTasks = append(view.ActiveTasks, t)
-		}
-	}
-	sort.Slice(view.ActiveTasks, func(i, j int) bool {
-		return view.ActiveTasks[i].UpdatedAt.After(view.ActiveTasks[j].UpdatedAt)
 	})
 
 	merged := []*maestro.Task{}
