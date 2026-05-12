@@ -108,11 +108,68 @@ type Task struct {
 // condensation), review (concerns raised by the review-verify-merge sub-agent
 // or a standalone reviewer), system (CLI-side bookkeeping). Type is optional
 // for backwards compatibility with notes written before this field existed.
+//
+// For Type="report", Content is canonical JSON conforming to the Report
+// schema below (modulo legacy text-format reports from older sessions, which
+// the web UI's renderer still falls back to parsing).
 type Note struct {
 	At      time.Time `json:"at"`
 	Source  string    `json:"source"`
 	Type    string    `json:"type,omitempty"`
 	Content string    `json:"content"`
+}
+
+// Report is the canonical structured shape for `maestro task report`. Carries
+// the implementer's outcome and any optional fields a review-verify-merge or
+// standalone reviewer sub-agent might add. All fields except Status and
+// Summary are optional; agents fill the ones that apply to their role.
+type Report struct {
+	// Implementer (and merge sub-agent) core fields
+	Status   string   `json:"status"`             // done | needs-info | blocked | merged | review-blocked | verify-failed | smoke-failed | conflict-blocked | implementer-stale | error
+	Summary  string   `json:"summary"`            // 2-4 sentence outcome
+	Files    []string `json:"files,omitempty"`    // files actually modified
+	Commit   string   `json:"commit,omitempty"`   // SHA of the final commit on the task branch
+	Deferred []string `json:"deferred,omitempty"` // explicitly skipped / out-of-scope items
+	Concerns []string `json:"concerns,omitempty"` // things to flag to the orchestrator / user
+	Notes    string   `json:"notes,omitempty"`    // free-form additional notes
+	// Merge sub-agent additions
+	MergeCommit    string          `json:"merge_commit,omitempty"`    // SHA of the merge commit
+	ReviewFindings []ReviewFinding `json:"review_findings,omitempty"` // structured review output
+	VerifyNotes    string          `json:"verify_notes,omitempty"`    // why VERIFY caught divergence
+	SmokeTail      string          `json:"smoke_tail,omitempty"`      // last ~30 lines on smoke fail
+}
+
+// ReviewFinding is one structured concern raised by REVIEW. Severity is
+// "blocking" (halts merge) or "non-blocking" (surfaced but doesn't block).
+type ReviewFinding struct {
+	Severity string `json:"severity"`          // blocking | non-blocking
+	Title    string `json:"title"`             // short headline
+	Details  string `json:"details,omitempty"` // optional explanation
+	File     string `json:"file,omitempty"`    // optional file path
+	Line     int    `json:"line,omitempty"`    // optional line number
+}
+
+// Validate enforces the minimum schema: non-empty status and summary, and
+// (for any review findings present) non-empty severity + title.
+func (r *Report) Validate() error {
+	if strings.TrimSpace(r.Status) == "" {
+		return errors.New("status is required")
+	}
+	if strings.TrimSpace(r.Summary) == "" {
+		return errors.New("summary is required (2-4 sentence outcome)")
+	}
+	for i, f := range r.ReviewFindings {
+		if strings.TrimSpace(f.Severity) == "" {
+			return fmt.Errorf("review_findings[%d]: severity is required (blocking | non-blocking)", i)
+		}
+		if f.Severity != "blocking" && f.Severity != "non-blocking" {
+			return fmt.Errorf("review_findings[%d]: severity must be 'blocking' or 'non-blocking', got %q", i, f.Severity)
+		}
+		if strings.TrimSpace(f.Title) == "" {
+			return fmt.Errorf("review_findings[%d]: title is required", i)
+		}
+	}
+	return nil
 }
 
 // Store is bound to a single project name and resolves all paths under

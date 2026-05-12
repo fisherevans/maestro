@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -39,6 +40,8 @@ Task commands:
   task new                   Create a task and worktree
   task list                  List tasks for a project
   task get <id>              Show one task
+  task get-prompt <id>       Print the stored implementer prompt for a task
+  task report <id>           Append a structured (validated JSON) report note
   task update <id>           Update task fields
   task files <id>            Manage declared file list
   task done <id>             Mark a task merged
@@ -553,7 +556,7 @@ func cmdProjectRename(args []string) error {
 
 func cmdTask(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: maestro task <new|list|get|get-prompt|update|files|done|abandon|delete>")
+		return errors.New("usage: maestro task <new|list|get|get-prompt|update|files|done|abandon|delete|report>")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -565,6 +568,8 @@ func cmdTask(args []string) error {
 		return cmdTaskGet(rest)
 	case "get-prompt":
 		return cmdTaskGetPrompt(rest)
+	case "report":
+		return cmdTaskReport(rest)
 	case "update":
 		return cmdTaskUpdate(rest)
 	case "files":
@@ -735,6 +740,97 @@ func cmdTaskGet(args []string) error {
 		return fmt.Errorf("task %s not found", id)
 	}
 	return printTask(os.Stdout, t, *asJSON)
+}
+
+// cmdTaskReport reads a JSON Report from stdin (or --file), validates it,
+// canonicalizes it, and appends a typed Note (type=report) to the task. This
+// is the structured replacement for the legacy `task update --note-content-stdin`
+// free-form text reports. Validation catches missing required fields and
+// malformed review findings before they land in state; unknown JSON fields
+// are rejected so typos surface as errors instead of silent drops.
+func cmdTaskReport(args []string) error {
+	fs := flag.NewFlagSet("task report", flag.ContinueOnError)
+	project := fs.String("project", "", "project name")
+	source := fs.String("source", "agent", "Note source (agent|orchestrator|user|system)")
+	fileFlag := fs.String("file", "", "read JSON from a file instead of stdin")
+	asJSON := fs.Bool("json", false, "JSON output (echo back the stored report)")
+	id, err := parseFlagsWithID(fs, args)
+	if err != nil {
+		return err
+	}
+
+	var raw []byte
+	if *fileFlag != "" {
+		raw, err = os.ReadFile(*fileFlag)
+		if err != nil {
+			return fmt.Errorf("read --file: %w", err)
+		}
+	} else {
+		raw, err = io.ReadAll(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("read stdin: %w", err)
+		}
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return errors.New("no report body provided on stdin (or --file)")
+	}
+
+	var report maestro.Report
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&report); err != nil {
+		return fmt.Errorf("invalid JSON report: %w", err)
+	}
+	if err := report.Validate(); err != nil {
+		return fmt.Errorf("report failed validation: %w", err)
+	}
+
+	canonical, err := json.MarshalIndent(&report, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal report: %w", err)
+	}
+
+	store, st, err := loadState(*project)
+	if err != nil {
+		return err
+	}
+	t := st.FindTask(id)
+	if t == nil {
+		return fmt.Errorf("task %s not found", id)
+	}
+	t.AddTypedNote(*source, "report", string(canonical))
+
+	// Mirror the report's commit field onto Task.FinalCommit when present,
+	// so `task list` / `maestro status` can show the implementer's SHA
+	// without having to re-parse the latest Note.
+	if report.Commit != "" {
+		t.FinalCommit = report.Commit
+	}
+	if report.Summary != "" && t.Summary == "" {
+		t.Summary = report.Summary
+	}
+	if err := store.Save(st); err != nil {
+		return err
+	}
+
+	if *asJSON {
+		return writeJSON(os.Stdout, &report)
+	}
+	fmt.Printf("report stored on %s (status=%s, summary=%d chars", id, report.Status, len(report.Summary))
+	if len(report.Files) > 0 {
+		fmt.Printf(", files=%d", len(report.Files))
+	}
+	if len(report.Deferred) > 0 {
+		fmt.Printf(", deferred=%d", len(report.Deferred))
+	}
+	if len(report.Concerns) > 0 {
+		fmt.Printf(", concerns=%d", len(report.Concerns))
+	}
+	if len(report.ReviewFindings) > 0 {
+		fmt.Printf(", review_findings=%d", len(report.ReviewFindings))
+	}
+	fmt.Println(")")
+	return nil
 }
 
 // cmdTaskGetPrompt prints just the ImplementerPrompt for a task. Sub-agents

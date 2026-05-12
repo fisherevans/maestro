@@ -2,9 +2,11 @@ package web
 
 import (
 	"bytes"
+	"encoding/json"
 	"html/template"
 	"strings"
 
+	"github.com/fisherevans/maestro/internal/maestro"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
@@ -63,6 +65,114 @@ var recognizedReportKeys = map[string]bool{
 	"MERGE_COMMIT":    true,
 	"SMOKE_TAIL":      true,
 	"TAGS":            true,
+}
+
+// noteRender is the resolved presentation form of a note body. Exactly one
+// of the three fields is non-nil/non-empty:
+//   - JSON  : structured Report (from `maestro task report`, the canonical form).
+//   - Text  : key/value fields parsed from legacy "STATUS: ..." text notes.
+//   - HTML  : markdown-rendered prose for everything else.
+type noteRender struct {
+	JSON *renderedReport
+	Text []reportField
+	HTML template.HTML
+}
+
+// renderedReport mirrors maestro.Report but with HTML-ified fields ready for
+// the template, plus a precomputed summary line for compact rendering.
+type renderedReport struct {
+	Status         string
+	StatusClass    string
+	SummaryHTML    template.HTML
+	Files          []string
+	Commit         string
+	Deferred       []renderedItem
+	Concerns       []renderedItem
+	NotesHTML      template.HTML
+	MergeCommit    string
+	ReviewFindings []renderedFinding
+	VerifyNotes    template.HTML
+	SmokeTail      string
+}
+
+type renderedItem struct {
+	HTML template.HTML
+}
+
+type renderedFinding struct {
+	Severity     string
+	BlockingFlag bool
+	Title        string
+	DetailsHTML  template.HTML
+	File         string
+	Line         int
+}
+
+// renderNoteContent picks the best presentation for a note body. JSON-shaped
+// (and parseable as Report) wins; legacy text-shaped reports come next;
+// everything else is markdown. Used by the template via the renderNote func.
+func renderNoteContent(content string) noteRender {
+	trimmed := strings.TrimSpace(content)
+	if strings.HasPrefix(trimmed, "{") {
+		var r maestro.Report
+		dec := json.NewDecoder(strings.NewReader(trimmed))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&r); err == nil && r.Status != "" {
+			return noteRender{JSON: renderReport(&r)}
+		}
+	}
+	if fields := parseReportNote(content); fields != nil {
+		return noteRender{Text: fields}
+	}
+	return noteRender{HTML: renderMarkdown(content)}
+}
+
+func renderReport(r *maestro.Report) *renderedReport {
+	out := &renderedReport{
+		Status:      r.Status,
+		StatusClass: reportStatusClass(r.Status),
+		SummaryHTML: renderMarkdown(r.Summary),
+		Files:       r.Files,
+		Commit:      r.Commit,
+		NotesHTML:   renderMarkdown(r.Notes),
+		MergeCommit: r.MergeCommit,
+		VerifyNotes: renderMarkdown(r.VerifyNotes),
+		SmokeTail:   r.SmokeTail,
+	}
+	for _, d := range r.Deferred {
+		out.Deferred = append(out.Deferred, renderedItem{HTML: renderMarkdown(d)})
+	}
+	for _, c := range r.Concerns {
+		out.Concerns = append(out.Concerns, renderedItem{HTML: renderMarkdown(c)})
+	}
+	for _, f := range r.ReviewFindings {
+		out.ReviewFindings = append(out.ReviewFindings, renderedFinding{
+			Severity:     f.Severity,
+			BlockingFlag: f.Severity == "blocking",
+			Title:        f.Title,
+			DetailsHTML:  renderMarkdown(f.Details),
+			File:         f.File,
+			Line:         f.Line,
+		})
+	}
+	return out
+}
+
+// reportStatusClass maps a report's STATUS value to a CSS class so the web
+// UI can render a colored pill. Mirrors the task-status palette where the
+// statuses overlap (done ~ merged-ish, blocked ~ blocked, etc).
+func reportStatusClass(status string) string {
+	switch status {
+	case "done", "merged":
+		return "status-merged"
+	case "needs-info":
+		return "status-awaiting"
+	case "blocked", "smoke-failed", "review-blocked", "verify-failed", "implementer-stale", "conflict-blocked", "error":
+		return "status-blocked"
+	case "in_progress":
+		return "status-in-progress"
+	}
+	return "status-other"
 }
 
 // parseReportNote tries to split a structured "KEY: value" note into fields.

@@ -177,18 +177,28 @@ Hard rules - violating these has corrupted prior sessions:
    `MAESTRO_PROJECT={{project_name}} maestro task files {{task_id}} --add <comma-separated paths relative to worktree>`
    Update the list if scope shifts.
 
-When done, write your full report to maestro state via:
+When done, write your full report to maestro state as a validated JSON
+object via `maestro task report`. The CLI validates the shape, rejects
+typos in field names, and stores it canonically. Do NOT use the legacy
+`task update --note-content-stdin` text-format report:
 
-   MAESTRO_PROJECT={{project_name}} maestro task update {{task_id}} \
-     --note-source=agent --note-type=report --note-content-stdin <<'REPORT'
-   STATUS: done | needs-info | blocked
-   SUMMARY: 2-4 sentence description of what changed and why
-   FILES: comma-separated list of files actually modified (relative to worktree)
-   COMMIT: SHA from `git rev-parse HEAD`
-   DEFERRED: things you explicitly skipped or treated as out-of-scope, one per line with a brief why (omit the field entirely if nothing deferred)
-   CONCERNS: things you want the orchestrator to flag to the user - uncertainties, design calls you made on the fly, "if you touch X again, watch Y" type warnings (omit if no concerns)
-   NOTES: anything else the orchestrator needs for merging or follow-up
+   MAESTRO_PROJECT={{project_name}} maestro task report {{task_id}} <<'REPORT'
+   {
+     "status": "done",
+     "summary": "2-4 sentence description of what changed and why",
+     "files": ["paths relative to worktree", "..."],
+     "commit": "SHA from git rev-parse HEAD",
+     "deferred": ["things you explicitly skipped or treated as out-of-scope, one per array item, with rationale"],
+     "concerns": ["things you want the orchestrator to flag to the user - uncertainties, design calls you made on the fly, watch-outs"],
+     "notes": "anything else the orchestrator needs for merging or follow-up (free-form, optional)"
+   }
    REPORT
+
+Required fields: `status` and `summary`. Recommended `status` values for
+the implementer: `done`, `needs-info`, `blocked`. Omit fields you don't
+need (empty arrays / empty strings). Don't invent new top-level fields -
+the CLI will reject unknown fields with a clear error so typos surface
+immediately.
 
 Then your final message back to the orchestrator is one line: "done. report on {{task_id}}."
 
@@ -265,12 +275,13 @@ For every concern, classify:
 - **Blocking**: needs an orchestrator/user call before merging (architectural, security, scope mismatch).
 - **Non-blocking**: worth flagging but the merge can proceed (style nits with rationale, future-watch items, accepted trade-offs).
 
-Write each finding as a Note:
-  MAESTRO_PROJECT={{project_name}} maestro task update {{task_id}} \
-    --note-source=agent --note-type=review --note-content-stdin <<'NOTE'
-  [blocking|non-blocking] one-line summary
-  details (file:line if applicable, what's wrong, what you'd do instead)
-  NOTE
+Collect each finding into the `review_findings` array in the final report
+(filed in Phase 3 via `maestro task report`). Each finding has:
+
+  {"severity": "blocking" | "non-blocking", "title": "one-line summary",
+   "details": "what's wrong, what you'd do instead", "file": "path", "line": 84}
+
+`severity` and `title` are required; `details`, `file`, `line` are optional.
 
 If ANY finding is blocking, set STATUS=review-blocked, populate REVIEW_FINDINGS, and stop. Do not proceed to VERIFY or MERGE.
 
@@ -303,15 +314,33 @@ If verified: continue to MERGE.
    c. `git branch -d <branch>`
    d. If you stashed in step 2, `git stash pop`
 
-## Final message format (one field per line, brief)
+## Final report (filed via `maestro task report`)
 
-  STATUS: merged | review-blocked | verify-failed | smoke-failed | conflict-blocked | implementer-stale | error
-  SUMMARY: 1-2 sentences on what happened
-  REVIEW_FINDINGS: list of concerns (one per line, prefixed [blocking] or [non-blocking]) - present whenever any review notes were written, including on successful merges
-  VERIFY_NOTES: present if verify caught divergence
-  MERGE_COMMIT: <sha> (only when merged)
-  SMOKE_TAIL: last ~30 lines (only when smoke-failed)
-  NOTES: anything else short
+After REVIEW (and VERIFY and MERGE if you got that far) completes, file a
+single structured report. The CLI validates the shape and rejects unknown
+fields, so typos surface as errors instead of silently disappearing:
+
+  MAESTRO_PROJECT={{project_name}} maestro task report {{task_id}} <<'REPORT'
+  {
+    "status": "merged",
+    "summary": "1-2 sentences on what happened end-to-end",
+    "merge_commit": "sha of the merge commit, only on merged",
+    "review_findings": [
+      {"severity": "non-blocking", "title": "...", "details": "...", "file": "...", "line": 0}
+    ],
+    "verify_notes": "only on verify-failed - explain the gap",
+    "smoke_tail": "only on smoke-failed - the last ~30 lines",
+    "notes": "anything else short"
+  }
+  REPORT
+
+`status` is one of: merged | review-blocked | verify-failed | smoke-failed
+| conflict-blocked | implementer-stale | error. Omit fields that don't
+apply (e.g. omit `merge_commit` when STATUS != merged). REVIEW_FINDINGS
+should be present whenever any review concerns were raised, including on
+successful merges (so the orchestrator can surface them to the user).
+
+Then your final message to the orchestrator is one line: "merged. report on {{task_id}}." (or whatever STATUS was). Don't inline the JSON.
 ```
 
 ### Acting on the merge sub-agent's report

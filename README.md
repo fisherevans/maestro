@@ -124,6 +124,7 @@ Tasks:
 ```
 maestro task new --description="..." [--label="..."] [--tags=a,b] [--session=<id>] [--prompt-stdin | --prompt-file=<path>]
 maestro task get-prompt <id>
+maestro task report <id> [--source=agent] [--file=<path>]  # validated JSON on stdin
 maestro task list [--status=active|pending|in_progress|...]
 maestro task get <id> [--json]
 maestro task update <id> [--status=] [--agent-id=] [--label=] [--note=] [--note-content-stdin --note-source= --note-type=] [--add-tags=] [--remove-tags=] [--summary=] [--commit=]
@@ -183,6 +184,27 @@ The skill structures every orchestrator turn around three things the user cares 
 - **End-of-turn signal** every substantive turn closes with `**IN PROGRESS:** ...` (active tasks listed) or `**NOW IDLE.**` (everything handed back). Bolded so the user can find it at a glance.
 
 The middle (file edits, iteration noise) stays out of the user-facing layer. Only actionable items interrupt: REVIEW pushback, smoke failures, needs-info from a sub-agent.
+
+## Structured reports
+
+Sub-agents file their final reports via `maestro task report <id>` with a validated JSON body on stdin:
+
+```json
+{
+  "status": "done",
+  "summary": "rewired credential check to use sync.Once for client dedup.",
+  "files": ["auth/login.go", "auth/login_test.go"],
+  "commit": "deadbeef12345",
+  "deferred": ["token refresh path has the same shape - left for a follow-up"],
+  "concerns": ["sync.Once keyed by clientID only; stale credentials could coalesce"],
+  "review_findings": [
+    {"severity": "non-blocking", "title": "consider keying by clientID+credential", "file": "auth/login.go", "line": 84}
+  ],
+  "notes": "tests verify both concurrent and serial paths."
+}
+```
+
+The CLI validates required fields (`status`, `summary`), enforces a `severity` enum on review findings (`blocking | non-blocking`), and rejects unknown fields - typos surface as errors instead of silent drops. The orchestrator and merge sub-agent file the same shape (the schema covers `merge_commit`, `verify_notes`, `smoke_tail`, and `review_findings` for the merge side). The web UI parses the stored JSON and renders structured fields (colored status pill, callout lists for deferred/concerns, severity-colored cards for review findings, monospace commits). Legacy text-format reports from older sessions still parse via a fallback.
 
 ## Knowledge store
 

@@ -69,16 +69,72 @@
         {{if .Type}}<span class="note-type">{{.Type}}</span>{{end}}
         <span class="note-time muted" title="{{rfc3339 .At}}">{{ago .At}}</span>
       </header>
-      {{$fields := parseReport .Content}}
-      {{if $fields}}
+      {{$render := renderNote .Content}}
+      {{if $render.JSON}}
+        {{with $render.JSON}}
         <dl class="note-fields">
-          {{range $fields}}
+          <dt class="field-status">STATUS</dt>
+          <dd class="field-status"><span class="pill {{.StatusClass}}">{{.Status}}</span></dd>
+          <dt class="field-summary">SUMMARY</dt>
+          <dd class="field-summary markdown">{{.SummaryHTML}}</dd>
+          {{if .Files}}
+          <dt class="field-files">FILES</dt>
+          <dd class="field-files"><ul class="files inline">{{range .Files}}<li class="mono">{{.}}</li>{{end}}</ul></dd>
+          {{end}}
+          {{if .Commit}}
+          <dt class="field-commit">COMMIT</dt>
+          <dd class="field-commit mono">{{.Commit}}</dd>
+          {{end}}
+          {{if .Deferred}}
+          <dt class="field-deferred">DEFERRED</dt>
+          <dd class="field-deferred"><ul class="callout-list">{{range .Deferred}}<li class="markdown">{{.HTML}}</li>{{end}}</ul></dd>
+          {{end}}
+          {{if .Concerns}}
+          <dt class="field-concerns">CONCERNS</dt>
+          <dd class="field-concerns"><ul class="callout-list">{{range .Concerns}}<li class="markdown">{{.HTML}}</li>{{end}}</ul></dd>
+          {{end}}
+          {{if .ReviewFindings}}
+          <dt class="field-review-findings">REVIEW</dt>
+          <dd class="field-review-findings">
+            <ul class="findings">
+            {{range .ReviewFindings}}
+              <li class="finding {{if .BlockingFlag}}finding-blocking{{else}}finding-nonblocking{{end}}">
+                <span class="finding-severity">{{.Severity}}</span>
+                <span class="finding-title">{{.Title}}</span>
+                {{if .File}}<span class="finding-loc mono">{{.File}}{{if .Line}}:{{.Line}}{{end}}</span>{{end}}
+                {{if .DetailsHTML}}<div class="finding-details markdown">{{.DetailsHTML}}</div>{{end}}
+              </li>
+            {{end}}
+            </ul>
+          </dd>
+          {{end}}
+          {{if .VerifyNotes}}
+          <dt class="field-verify-notes">VERIFY</dt>
+          <dd class="field-verify-notes markdown">{{.VerifyNotes}}</dd>
+          {{end}}
+          {{if .MergeCommit}}
+          <dt class="field-merge-commit">MERGE COMMIT</dt>
+          <dd class="field-merge-commit mono">{{.MergeCommit}}</dd>
+          {{end}}
+          {{if .SmokeTail}}
+          <dt class="field-smoke-tail">SMOKE TAIL</dt>
+          <dd class="field-smoke-tail"><pre>{{.SmokeTail}}</pre></dd>
+          {{end}}
+          {{if .NotesHTML}}
+          <dt class="field-notes">NOTES</dt>
+          <dd class="field-notes markdown">{{.NotesHTML}}</dd>
+          {{end}}
+        </dl>
+        {{end}}
+      {{else if $render.Text}}
+        <dl class="note-fields">
+          {{range $render.Text}}
           <dt class="{{reportFieldClass .Key}}">{{.Key}}</dt>
           <dd class="{{reportFieldClass .Key}}">{{.HTML}}</dd>
           {{end}}
         </dl>
       {{else}}
-        <div class="note-body markdown">{{markdown .Content}}</div>
+        <div class="note-body markdown">{{$render.HTML}}</div>
       {{end}}
     </article>
     {{end}}
