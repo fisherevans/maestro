@@ -117,6 +117,8 @@ table.rows th, table.rows td {
 table.rows tbody tr:last-child td { border-bottom: none; }
 table.rows th { background: var(--bg); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); }
 table.rows tbody tr:hover { background: #fafaf3; }
+table.rows tbody tr[data-href] { cursor: pointer; }
+table.rows tbody tr[data-href]:hover { background: #f0eee5; }
 
 .pill {
   display: inline-block;

@@ -8,7 +8,7 @@
 <body>
 <header class="topbar">
   <nav><a href="/">maestro</a> / <strong>{{.Project.Name}}</strong></nav>
-  <form action="/p/{{.Project.Name}}/search" method="get" class="topsearch">
+  <form action="/project/{{.Project.Name}}/search" method="get" class="topsearch">
     <input type="search" name="text" placeholder="search this project..." autocomplete="off">
     <button type="submit">search</button>
   </form>
@@ -30,8 +30,8 @@
       <thead><tr><th>ID</th><th>Name</th><th>Started</th><th>Tasks</th></tr></thead>
       <tbody>
         {{range .ActiveSessions}}
-        <tr>
-          <td><a href="/p/{{$.Project.Name}}/s/{{.Session.ID}}">{{.Session.ID}}</a></td>
+        <tr data-href="/project/{{$.Project.Name}}/session/{{.Session.ID}}">
+          <td><a href="/project/{{$.Project.Name}}/session/{{.Session.ID}}">{{.Session.ID}}</a></td>
           <td>{{if .Session.Name}}{{.Session.Name}}{{else}}<span class="muted">(unnamed)</span>{{end}}</td>
           <td title="{{rfc3339 .Session.StartedAt}}">{{ago .Session.StartedAt}}</td>
           <td>{{.TaskN}}</td>
@@ -49,11 +49,11 @@
       <thead><tr><th>ID</th><th>Status</th><th>Label</th><th>Session</th><th>Tags</th><th>Updated</th></tr></thead>
       <tbody>
         {{range .ActiveTasks}}
-        <tr>
-          <td><a href="/p/{{$.Project.Name}}/t/{{.ID}}">{{.ID}}</a></td>
+        <tr data-href="/project/{{$.Project.Name}}/task/{{.ID}}">
+          <td><a href="/project/{{$.Project.Name}}/task/{{.ID}}">{{.ID}}</a></td>
           <td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td>
           <td>{{if .Label}}{{.Label}}{{else}}<span class="muted">(no label)</span>{{end}}</td>
-          <td>{{if .Session}}<a href="/p/{{$.Project.Name}}/s/{{.Session}}">{{.Session}}</a>{{else}}<span class="muted">-</span>{{end}}</td>
+          <td>{{if .Session}}<a href="/project/{{$.Project.Name}}/session/{{.Session}}">{{.Session}}</a>{{else}}<span class="muted">-</span>{{end}}</td>
           <td class="muted">{{join .Tags ", "}}</td>
           <td title="{{rfc3339 .UpdatedAt}}">{{ago .UpdatedAt}}</td>
         </tr>
@@ -70,10 +70,10 @@
       <thead><tr><th>ID</th><th>Label</th><th>Session</th><th>Tags</th><th>Merged</th></tr></thead>
       <tbody>
         {{range .RecentMerged}}
-        <tr>
-          <td><a href="/p/{{$.Project.Name}}/t/{{.ID}}">{{.ID}}</a></td>
+        <tr data-href="/project/{{$.Project.Name}}/task/{{.ID}}">
+          <td><a href="/project/{{$.Project.Name}}/task/{{.ID}}">{{.ID}}</a></td>
           <td>{{if .Label}}{{.Label}}{{else}}<span class="muted">(no label)</span>{{end}}</td>
-          <td>{{if .Session}}<a href="/p/{{$.Project.Name}}/s/{{.Session}}">{{.Session}}</a>{{else}}<span class="muted">-</span>{{end}}</td>
+          <td>{{if .Session}}<a href="/project/{{$.Project.Name}}/session/{{.Session}}">{{.Session}}</a>{{else}}<span class="muted">-</span>{{end}}</td>
           <td class="muted">{{join .Tags ", "}}</td>
           <td title="{{rfc3339 .UpdatedAt}}">{{ago .UpdatedAt}}</td>
         </tr>
@@ -90,8 +90,8 @@
       <thead><tr><th>ID</th><th>Name</th><th>Ended</th><th>Tasks</th><th></th></tr></thead>
       <tbody>
         {{range .PastSessions}}
-        <tr>
-          <td><a href="/p/{{$.Project.Name}}/s/{{.Session.ID}}">{{.Session.ID}}</a></td>
+        <tr data-href="/project/{{$.Project.Name}}/session/{{.Session.ID}}">
+          <td><a href="/project/{{$.Project.Name}}/session/{{.Session.ID}}">{{.Session.ID}}</a></td>
           <td>{{if .Session.Name}}{{.Session.Name}}{{else}}<span class="muted">(unnamed)</span>{{end}}</td>
           <td title="{{rfc3339 .Session.EndedAt}}">{{ago .Session.EndedAt}}</td>
           <td>{{.TaskN}}</td>
@@ -108,11 +108,12 @@
     <h3>Tags</h3>
     <div class="tagcloud">
       {{range .Tags}}
-      <a href="/p/{{$.Project.Name}}/search?tags={{.Tag}}" class="tag">{{.Tag}} <span class="muted">({{.Count}})</span></a>
+      <a href="/project/{{$.Project.Name}}/search?tags={{.Tag}}" class="tag">{{.Tag}} <span class="muted">({{.Count}})</span></a>
       {{end}}
     </div>
   </section>
   {{end}}
 </main>
+<script src="/static/rows.js"></script>
 </body>
 </html>

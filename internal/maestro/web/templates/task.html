@@ -8,11 +8,11 @@
 <body>
 <header class="topbar">
   <nav>
-    <a href="/">maestro</a> / <a href="/p/{{.Project.Name}}">{{.Project.Name}}</a>
-    {{if .Session}} / <a href="/p/{{.Project.Name}}/s/{{.Session.ID}}">{{.Session.ID}}</a>{{end}}
+    <a href="/">maestro</a> / <a href="/project/{{.Project.Name}}">{{.Project.Name}}</a>
+    {{if .Session}} / <a href="/project/{{.Project.Name}}/session/{{.Session.ID}}">{{.Session.ID}}</a>{{end}}
     / <strong>{{.Task.ID}}</strong>
   </nav>
-  <form action="/p/{{.Project.Name}}/search" method="get" class="topsearch">
+  <form action="/project/{{.Project.Name}}/search" method="get" class="topsearch">
     <input type="search" name="text" placeholder="search this project..." autocomplete="off">
     <button type="submit">search</button>
   </form>
@@ -26,8 +26,8 @@
     </h2>
     <dl class="meta">
       <dt>Description</dt><dd>{{.Task.Description}}</dd>
-      {{if .Task.Session}}<dt>Session</dt><dd><a href="/p/{{.Project.Name}}/s/{{.Task.Session}}">{{.Task.Session}}</a>{{if .Session.Name}} <span class="muted">- {{.Session.Name}}</span>{{end}}</dd>{{end}}
-      {{if .Task.Tags}}<dt>Tags</dt><dd>{{range .Task.Tags}}<a href="/p/{{$.Project.Name}}/search?tags={{.}}" class="tag">{{.}}</a> {{end}}</dd>{{end}}
+      {{if .Task.Session}}<dt>Session</dt><dd><a href="/project/{{.Project.Name}}/session/{{.Task.Session}}">{{.Task.Session}}</a>{{if .Session.Name}} <span class="muted">- {{.Session.Name}}</span>{{end}}</dd>{{end}}
+      {{if .Task.Tags}}<dt>Tags</dt><dd>{{range .Task.Tags}}<a href="/project/{{$.Project.Name}}/search?tags={{.}}" class="tag">{{.}}</a> {{end}}</dd>{{end}}
       <dt>Branch</dt><dd class="mono">{{.Task.Branch}}</dd>
       <dt>Base</dt><dd class="mono">{{.Task.BaseBranch}} <span class="muted">@ {{.Task.BaseCommit}}</span></dd>
       {{if .Task.FinalCommit}}<dt>Final commit</dt><dd class="mono">{{.Task.FinalCommit}}</dd>{{end}}

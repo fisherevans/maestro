@@ -26,8 +26,8 @@
     </thead>
     <tbody>
       {{range .Projects}}
-      <tr>
-        <td><a href="/p/{{.Name}}"><strong>{{.Name}}</strong></a></td>
+      <tr data-href="/project/{{.Name}}">
+        <td><a href="/project/{{.Name}}"><strong>{{.Name}}</strong></a></td>
         <td class="muted mono">{{.RepoPath}}</td>
         <td>
           <span class="pill status-in-progress">{{.ActiveN}} active</span>
@@ -42,5 +42,6 @@
   </table>
   {{end}}
 </main>
+<script src="/static/rows.js"></script>
 </body>
 </html>

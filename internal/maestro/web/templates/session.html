@@ -7,8 +7,8 @@
 </head>
 <body>
 <header class="topbar">
-  <nav><a href="/">maestro</a> / <a href="/p/{{.Project.Name}}">{{.Project.Name}}</a> / <strong>{{.Session.ID}}</strong></nav>
-  <form action="/p/{{.Project.Name}}/search" method="get" class="topsearch">
+  <nav><a href="/">maestro</a> / <a href="/project/{{.Project.Name}}">{{.Project.Name}}</a> / <strong>{{.Session.ID}}</strong></nav>
+  <form action="/project/{{.Project.Name}}/search" method="get" class="topsearch">
     <input type="search" name="text" placeholder="search this project..." autocomplete="off">
     <button type="submit">search</button>
   </form>
@@ -40,8 +40,8 @@
       <thead><tr><th>ID</th><th>Status</th><th>Label</th><th>Tags</th><th>Updated</th></tr></thead>
       <tbody>
         {{range .Tasks}}
-        <tr>
-          <td><a href="/p/{{$.Project.Name}}/t/{{.ID}}">{{.ID}}</a></td>
+        <tr data-href="/project/{{$.Project.Name}}/task/{{.ID}}">
+          <td><a href="/project/{{$.Project.Name}}/task/{{.ID}}">{{.ID}}</a></td>
           <td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td>
           <td>{{if .Label}}{{.Label}}{{else}}<span class="muted">(no label)</span>{{end}}</td>
           <td class="muted">{{join .Tags ", "}}</td>
@@ -53,5 +53,6 @@
     {{end}}
   </section>
 </main>
+<script src="/static/rows.js"></script>
 </body>
 </html>

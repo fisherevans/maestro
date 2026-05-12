@@ -7,12 +7,12 @@
 </head>
 <body>
 <header class="topbar">
-  <nav><a href="/">maestro</a> / <a href="/p/{{.Project.Name}}">{{.Project.Name}}</a> / <strong>search</strong></nav>
+  <nav><a href="/">maestro</a> / <a href="/project/{{.Project.Name}}">{{.Project.Name}}</a> / <strong>search</strong></nav>
 </header>
 <main>
   <section class="card">
     <h2>Search</h2>
-    <form action="/p/{{.Project.Name}}/search" method="get" class="searchform">
+    <form action="/project/{{.Project.Name}}/search" method="get" class="searchform">
       <div class="row">
         <label>Text <input type="search" name="text" value="{{.Form.Text}}" placeholder="substring on label / description / summary" autocomplete="off"></label>
       </div>
@@ -27,7 +27,7 @@
       </div>
       <div class="row">
         <button type="submit">search</button>
-        <a href="/p/{{.Project.Name}}/search" class="muted">clear</a>
+        <a href="/project/{{.Project.Name}}/search" class="muted">clear</a>
       </div>
     </form>
   </section>
@@ -39,11 +39,11 @@
       <thead><tr><th>ID</th><th>Status</th><th>Label</th><th>Session</th><th>Tags</th><th>Updated</th></tr></thead>
       <tbody>
         {{range .Results}}
-        <tr>
-          <td><a href="/p/{{$.Project.Name}}/t/{{.ID}}">{{.ID}}</a></td>
+        <tr data-href="/project/{{$.Project.Name}}/task/{{.ID}}">
+          <td><a href="/project/{{$.Project.Name}}/task/{{.ID}}">{{.ID}}</a></td>
           <td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td>
           <td>{{if .Label}}{{.Label}}{{else}}<span class="muted">(no label)</span>{{end}}</td>
-          <td>{{if .Session}}<a href="/p/{{$.Project.Name}}/s/{{.Session}}">{{.Session}}</a>{{else}}<span class="muted">-</span>{{end}}</td>
+          <td>{{if .Session}}<a href="/project/{{$.Project.Name}}/session/{{.Session}}">{{.Session}}</a>{{else}}<span class="muted">-</span>{{end}}</td>
           <td class="muted">{{join .Tags ", "}}</td>
           <td title="{{rfc3339 .UpdatedAt}}">{{ago .UpdatedAt}}</td>
         </tr>
@@ -62,11 +62,12 @@
     <h3>Tags in this project</h3>
     <div class="tagcloud">
       {{range .Tags}}
-      <a href="/p/{{$.Project.Name}}/search?tags={{.Tag}}" class="tag">{{.Tag}} <span class="muted">({{.Count}})</span></a>
+      <a href="/project/{{$.Project.Name}}/search?tags={{.Tag}}" class="tag">{{.Tag}} <span class="muted">({{.Count}})</span></a>
       {{end}}
     </div>
   </section>
   {{end}}
 </main>
+<script src="/static/rows.js"></script>
 </body>
 </html>

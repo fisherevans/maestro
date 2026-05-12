@@ -50,10 +50,10 @@ func Serve(addr string, openBrowser bool) error {
 	mux := http.NewServeMux()
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
 	mux.HandleFunc("GET /{$}", s.handleIndex)
-	mux.HandleFunc("GET /p/{project}", s.handleProject)
-	mux.HandleFunc("GET /p/{project}/search", s.handleSearch)
-	mux.HandleFunc("GET /p/{project}/s/{session}", s.handleSession)
-	mux.HandleFunc("GET /p/{project}/t/{task}", s.handleTask)
+	mux.HandleFunc("GET /project/{project}", s.handleProject)
+	mux.HandleFunc("GET /project/{project}/search", s.handleSearch)
+	mux.HandleFunc("GET /project/{project}/session/{session}", s.handleSession)
+	mux.HandleFunc("GET /project/{project}/task/{task}", s.handleTask)
 
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
