@@ -293,6 +293,33 @@ details[open] summary::before { content: "▾  "; }
 }
 .note-fields dd.field-smoke-tail pre { font-size: 11.5px; }
 
+/* Search result matches: under each result row, a folded panel listing
+   exactly where the query landed (label / description / summary / note /
+   tag) with the matched substring wrapped in <mark>. The match-row carries
+   the same data-href so clicking the snippet area opens the task too. */
+table.rows.results .match-row td {
+  background: #fbfbf7;
+  padding: 6px 14px 10px;
+  border-top: none;
+}
+table.rows.results tr:not(.match-row) td { border-bottom: none; }
+table.rows.results .match-row + tr:not(.match-row) td { border-top: 1px solid var(--border); }
+ul.matches { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 3px; }
+ul.matches li { font-size: 12.5px; color: var(--fg); }
+.match-field {
+  display: inline-block;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+  background: var(--pill-bg);
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-right: 8px;
+  vertical-align: 1px;
+}
+mark { background: #fef08a; color: var(--fg); padding: 0 2px; border-radius: 2px; }
+
 .searchform .row { display: flex; gap: 16px; margin-bottom: 12px; flex-wrap: wrap; align-items: baseline; }
 .searchform label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--fg-muted); flex: 1 1 200px; }
 .searchform input { padding: 6px 10px; border: 1px solid var(--border); border-radius: 4px; font-size: 13px; }

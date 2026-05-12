@@ -35,18 +35,29 @@
   {{if .Results}}
   <section>
     <h3>Results ({{len .Results}})</h3>
-    <table class="rows">
+    <table class="rows results">
       <thead><tr><th>ID</th><th>Status</th><th>Label</th><th>Session</th><th>Tags</th><th>Updated</th></tr></thead>
       <tbody>
         {{range .Results}}
-        <tr data-href="/project/{{$.Project.Name}}/task/{{.ID}}">
-          <td><a href="/project/{{$.Project.Name}}/task/{{.ID}}">{{.ID}}</a></td>
-          <td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td>
-          <td>{{if .Label}}{{.Label}}{{else}}<span class="muted">(no label)</span>{{end}}</td>
-          <td>{{if .Session}}<a href="/project/{{$.Project.Name}}/session/{{.Session}}">{{.Session}}</a>{{else}}<span class="muted">-</span>{{end}}</td>
-          <td class="muted">{{join .Tags ", "}}</td>
-          <td title="{{rfc3339 .UpdatedAt}}">{{ago .UpdatedAt}}</td>
+        <tr data-href="/project/{{$.Project.Name}}/task/{{.Task.ID}}">
+          <td><a href="/project/{{$.Project.Name}}/task/{{.Task.ID}}">{{.Task.ID}}</a></td>
+          <td><span class="pill {{statusClass .Task.Status}}">{{.Task.Status}}</span></td>
+          <td>{{if .Task.Label}}{{.Task.Label}}{{else}}<span class="muted">(no label)</span>{{end}}</td>
+          <td>{{if .Task.Session}}<a href="/project/{{$.Project.Name}}/session/{{.Task.Session}}">{{.Task.Session}}</a>{{else}}<span class="muted">-</span>{{end}}</td>
+          <td class="muted">{{join .Task.Tags ", "}}</td>
+          <td title="{{rfc3339 .Task.UpdatedAt}}">{{ago .Task.UpdatedAt}}</td>
         </tr>
+        {{if .Matches}}
+        <tr class="match-row" data-href="/project/{{$.Project.Name}}/task/{{.Task.ID}}">
+          <td colspan="6">
+            <ul class="matches">
+              {{range .Matches}}
+              <li><span class="match-field">{{.Field}}</span> {{.Snippet}}</li>
+              {{end}}
+            </ul>
+          </td>
+        </tr>
+        {{end}}
         {{end}}
       </tbody>
     </table>

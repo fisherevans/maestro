@@ -299,6 +299,10 @@ type SearchQuery struct {
 }
 
 // SearchTasks returns tasks matching the query, sorted by UpdatedAt descending.
+// Text matches against label, description, summary, AND note content - the
+// last one is what makes "what was decided about X" searches actually work,
+// since decisions and review findings usually live in Notes, not the
+// top-level fields.
 func (st *State) SearchTasks(q SearchQuery) []*Task {
 	text := strings.ToLower(strings.TrimSpace(q.Text))
 	tagSet := make(map[string]bool, len(q.Tags))
@@ -319,6 +323,14 @@ func (st *State) SearchTasks(q SearchQuery) []*Task {
 			hit := strings.Contains(strings.ToLower(t.Label), text) ||
 				strings.Contains(strings.ToLower(t.Description), text) ||
 				strings.Contains(strings.ToLower(t.Summary), text)
+			if !hit {
+				for _, n := range t.Notes {
+					if strings.Contains(strings.ToLower(n.Content), text) {
+						hit = true
+						break
+					}
+				}
+			}
 			if !hit {
 				continue
 			}

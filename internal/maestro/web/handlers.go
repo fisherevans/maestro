@@ -217,8 +217,15 @@ type searchData struct {
 	Project *maestro.Project
 	Query   maestro.SearchQuery
 	Form    searchForm
-	Results []*maestro.Task
+	Results []searchResult
 	Tags    []tagCount
+}
+
+// searchResult pairs a matching task with the field-level match snippets that
+// explain why it showed up in the results.
+type searchResult struct {
+	Task    *maestro.Task
+	Matches []searchMatch
 }
 
 type searchForm struct {
@@ -292,7 +299,17 @@ func (s *server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Tags:    sortedTagCounts(st.AllTags()),
 	}
 	if anyFilterSet(form) {
-		view.Results = st.SearchTasks(q)
+		tasks := st.SearchTasks(q)
+		for _, t := range tasks {
+			notes := make([]note, 0, len(t.Notes))
+			for _, n := range t.Notes {
+				notes = append(notes, note{Source: n.Source, Type: n.Type, Content: n.Content})
+			}
+			view.Results = append(view.Results, searchResult{
+				Task:    t,
+				Matches: matchesFor(t.Label, t.Description, t.Summary, t.Tags, notes, form.Text, splitCsv(form.Tags), 160),
+			})
+		}
 	}
 	s.render(w, "search.html", view)
 }

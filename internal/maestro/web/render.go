@@ -104,6 +104,118 @@ func parseReportNote(content string) []reportField {
 	return fields
 }
 
+// searchMatch is one hit from a text search: where it landed on the task and
+// a short snippet showing the matched substring in context. Used by the web
+// UI's search results page so the user can see why each row matched.
+type searchMatch struct {
+	Field   string        // "label" | "description" | "summary" | "note (<source>/<type>)" | "tag"
+	Snippet template.HTML // pre-rendered HTML with the match wrapped in <mark>
+}
+
+// matchesFor returns up to maxPerField snippets per source field. Always
+// returns at least one match if anything contained the needle; otherwise nil.
+// Tag matches are returned as Field="tag", Snippet=the tag itself.
+func matchesFor(label, description, summary string, tags []string, notes []note, queryText string, queryTags []string, maxSnippet int) []searchMatch {
+	var out []searchMatch
+	q := strings.TrimSpace(queryText)
+	if q != "" {
+		if m := buildSnippet(label, q, maxSnippet); m != "" {
+			out = append(out, searchMatch{Field: "label", Snippet: m})
+		}
+		if m := buildSnippet(description, q, maxSnippet); m != "" {
+			out = append(out, searchMatch{Field: "description", Snippet: m})
+		}
+		if m := buildSnippet(summary, q, maxSnippet); m != "" {
+			out = append(out, searchMatch{Field: "summary", Snippet: m})
+		}
+		for _, n := range notes {
+			if m := buildSnippet(n.Content, q, maxSnippet); m != "" {
+				label := "note"
+				if n.Source != "" || n.Type != "" {
+					parts := []string{}
+					if n.Source != "" {
+						parts = append(parts, n.Source)
+					}
+					if n.Type != "" {
+						parts = append(parts, n.Type)
+					}
+					label = "note (" + strings.Join(parts, "/") + ")"
+				}
+				out = append(out, searchMatch{Field: label, Snippet: m})
+			}
+		}
+	}
+	tagSet := make(map[string]bool, len(queryTags))
+	for _, t := range queryTags {
+		tagSet[strings.TrimSpace(t)] = true
+	}
+	for _, t := range tags {
+		if tagSet[t] {
+			out = append(out, searchMatch{Field: "tag", Snippet: template.HTML(template.HTMLEscapeString(t))})
+		}
+	}
+	return out
+}
+
+// note is a thin shim so matchesFor doesn't import maestro just for the
+// Note shape. handlers.go converts maestro.Note to this on the way in.
+type note struct {
+	Source  string
+	Type    string
+	Content string
+}
+
+// buildSnippet finds needle in haystack (case-insensitive) and returns an
+// HTML-escaped excerpt with the matched substring wrapped in <mark>. Returns
+// "" if no match. The window is approximately `window` chars centered on
+// the first match; leading/trailing ellipses indicate truncation.
+func buildSnippet(haystack, needle string, window int) template.HTML {
+	if needle == "" || haystack == "" {
+		return ""
+	}
+	lowerHay := strings.ToLower(haystack)
+	lowerNeedle := strings.ToLower(needle)
+	i := strings.Index(lowerHay, lowerNeedle)
+	if i < 0 {
+		return ""
+	}
+	nl := len(needle)
+	half := window / 2
+	start := i - half
+	if start < 0 {
+		start = 0
+	}
+	end := i + nl + half
+	if end > len(haystack) {
+		end = len(haystack)
+	}
+	// Expand to word boundaries when cheap.
+	for start > 0 && haystack[start] != ' ' && haystack[start] != '\n' && i-start < half+10 {
+		start--
+	}
+	for end < len(haystack) && haystack[end-1] != ' ' && haystack[end-1] != '\n' && end-i-nl < half+10 {
+		end++
+	}
+	pre := haystack[start:i]
+	hit := haystack[i : i+nl]
+	post := haystack[i+nl : end]
+	var b strings.Builder
+	if start > 0 {
+		b.WriteString("…")
+	}
+	b.WriteString(template.HTMLEscapeString(pre))
+	b.WriteString(`<mark>`)
+	b.WriteString(template.HTMLEscapeString(hit))
+	b.WriteString(`</mark>`)
+	b.WriteString(template.HTMLEscapeString(post))
+	if end < len(haystack) {
+		b.WriteString("…")
+	}
+	// Collapse runs of whitespace to make snippets compact.
+	out := strings.Join(strings.Fields(b.String()), " ")
+	return template.HTML(out)
+}
+
 // splitReportLine returns (KEY, value, ok=true) when a line looks like
 // `KEY: rest of value`, the KEY is in recognizedReportKeys, and there's no
 // leading whitespace (so indented "Note:" inside prose doesn't trigger).
