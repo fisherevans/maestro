@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{.Project.Name}} - maestro</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <nav><a href="/">maestro</a> / <strong>{{.Project.Name}}</strong></nav>
+  <form action="/p/{{.Project.Name}}/search" method="get" class="topsearch">
+    <input type="search" name="text" placeholder="search this project..." autocomplete="off">
+    <button type="submit">search</button>
+  </form>
+</header>
+<main>
+  <section class="card">
+    <h2>{{.Project.Name}}</h2>
+    <dl class="meta">
+      <dt>Repo</dt><dd class="mono">{{.Project.RepoPath}}</dd>
+      <dt>Default base</dt><dd class="mono">{{.Project.DefaultBase}}</dd>
+      {{if .Project.SmokeGate}}<dt>Smoke gate</dt><dd class="mono code-inline">{{.Project.SmokeGate}}</dd>{{end}}
+    </dl>
+  </section>
+
+  {{if .ActiveSessions}}
+  <section>
+    <h3>Active sessions</h3>
+    <table class="rows">
+      <thead><tr><th>ID</th><th>Name</th><th>Started</th><th>Tasks</th></tr></thead>
+      <tbody>
+        {{range .ActiveSessions}}
+        <tr>
+          <td><a href="/p/{{$.Project.Name}}/s/{{.Session.ID}}">{{.Session.ID}}</a></td>
+          <td>{{if .Session.Name}}{{.Session.Name}}{{else}}<span class="muted">(unnamed)</span>{{end}}</td>
+          <td title="{{rfc3339 .Session.StartedAt}}">{{ago .Session.StartedAt}}</td>
+          <td>{{.TaskN}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </section>
+  {{end}}
+
+  {{if .ActiveTasks}}
+  <section>
+    <h3>Active tasks ({{len .ActiveTasks}})</h3>
+    <table class="rows">
+      <thead><tr><th>ID</th><th>Status</th><th>Label</th><th>Session</th><th>Tags</th><th>Updated</th></tr></thead>
+      <tbody>
+        {{range .ActiveTasks}}
+        <tr>
+          <td><a href="/p/{{$.Project.Name}}/t/{{.ID}}">{{.ID}}</a></td>
+          <td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td>
+          <td>{{if .Label}}{{.Label}}{{else}}<span class="muted">(no label)</span>{{end}}</td>
+          <td>{{if .Session}}<a href="/p/{{$.Project.Name}}/s/{{.Session}}">{{.Session}}</a>{{else}}<span class="muted">-</span>{{end}}</td>
+          <td class="muted">{{join .Tags ", "}}</td>
+          <td title="{{rfc3339 .UpdatedAt}}">{{ago .UpdatedAt}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </section>
+  {{end}}
+
+  {{if .RecentMerged}}
+  <section>
+    <h3>Recently merged</h3>
+    <table class="rows">
+      <thead><tr><th>ID</th><th>Label</th><th>Session</th><th>Tags</th><th>Merged</th></tr></thead>
+      <tbody>
+        {{range .RecentMerged}}
+        <tr>
+          <td><a href="/p/{{$.Project.Name}}/t/{{.ID}}">{{.ID}}</a></td>
+          <td>{{if .Label}}{{.Label}}{{else}}<span class="muted">(no label)</span>{{end}}</td>
+          <td>{{if .Session}}<a href="/p/{{$.Project.Name}}/s/{{.Session}}">{{.Session}}</a>{{else}}<span class="muted">-</span>{{end}}</td>
+          <td class="muted">{{join .Tags ", "}}</td>
+          <td title="{{rfc3339 .UpdatedAt}}">{{ago .UpdatedAt}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </section>
+  {{end}}
+
+  {{if .PastSessions}}
+  <section>
+    <h3>Past sessions ({{len .PastSessions}})</h3>
+    <table class="rows">
+      <thead><tr><th>ID</th><th>Name</th><th>Ended</th><th>Tasks</th><th></th></tr></thead>
+      <tbody>
+        {{range .PastSessions}}
+        <tr>
+          <td><a href="/p/{{$.Project.Name}}/s/{{.Session.ID}}">{{.Session.ID}}</a></td>
+          <td>{{if .Session.Name}}{{.Session.Name}}{{else}}<span class="muted">(unnamed)</span>{{end}}</td>
+          <td title="{{rfc3339 .Session.EndedAt}}">{{ago .Session.EndedAt}}</td>
+          <td>{{.TaskN}}</td>
+          <td>{{if .Session.Condensed}}<span class="pill status-merged">condensed</span>{{end}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </section>
+  {{end}}
+
+  {{if .Tags}}
+  <section>
+    <h3>Tags</h3>
+    <div class="tagcloud">
+      {{range .Tags}}
+      <a href="/p/{{$.Project.Name}}/search?tags={{.Tag}}" class="tag">{{.Tag}} <span class="muted">({{.Count}})</span></a>
+      {{end}}
+    </div>
+  </section>
+  {{end}}
+</main>
+</body>
+</html>

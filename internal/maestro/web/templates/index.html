@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>maestro</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <h1><a href="/">maestro</a></h1>
+</header>
+<main>
+  <h2>Projects</h2>
+  {{if not .Projects}}
+    <p class="muted">No projects yet. Run <code>maestro init --project=&lt;name&gt;</code> in a repo to start.</p>
+  {{else}}
+  <table class="rows">
+    <thead>
+      <tr>
+        <th>Project</th>
+        <th>Repo</th>
+        <th>Tasks</th>
+        <th>Sessions</th>
+        <th>Last activity</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Projects}}
+      <tr>
+        <td><a href="/p/{{.Name}}"><strong>{{.Name}}</strong></a></td>
+        <td class="muted mono">{{.RepoPath}}</td>
+        <td>
+          <span class="pill status-in-progress">{{.ActiveN}} active</span>
+          <span class="pill status-merged">{{.MergedN}} merged</span>
+          <span class="muted">/ {{.TotalN}}</span>
+        </td>
+        <td>{{.SessionsN}}</td>
+        <td title="{{rfc3339 .LastChange}}">{{ago .LastChange}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</main>
+</body>
+</html>

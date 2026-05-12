@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/fisherevans/maestro/internal/maestro"
+	"github.com/fisherevans/maestro/internal/maestro/web"
 )
 
 const usage = `maestro - state and worktree helper for the maestro orchestration skill
@@ -53,6 +54,7 @@ Coordination:
 Display:
   statusline                 One-line task summary, suitable for a Claude Code statusLine
   status                     Multi-line snapshot: active tasks + recently merged
+  web                        Run a local web UI for browsing project/session/task history
 
 Sessions and history:
   session start              Start a session (returns ID; export MAESTRO_SESSION)
@@ -111,6 +113,8 @@ func run(args []string) error {
 		return cmdTag(rest)
 	case "search":
 		return cmdSearch(rest)
+	case "web":
+		return cmdWeb(rest)
 	default:
 		return fmt.Errorf("unknown command %q (run `maestro` for usage)", cmd)
 	}
@@ -1134,6 +1138,21 @@ func cmdWorktreeRestore(args []string) error {
 	}
 	fmt.Printf("restored: %s (branch %s)\n", t.WorktreePath, t.Branch)
 	return nil
+}
+
+// ---- web ----
+
+// cmdWeb starts a local browser UI for exploring maestro state. Read-only.
+func cmdWeb(args []string) error {
+	fs := flag.NewFlagSet("web", flag.ContinueOnError)
+	port := fs.Int("port", 9876, "TCP port to listen on")
+	bind := fs.String("bind", "127.0.0.1", "interface to bind (default localhost only)")
+	openBrowser := fs.Bool("open", true, "open the default browser when ready")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	addr := fmt.Sprintf("%s:%d", *bind, *port)
+	return web.Serve(addr, *openBrowser)
 }
 
 // ---- statusline ----

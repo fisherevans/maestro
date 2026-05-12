@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{.Task.ID}} - {{.Project.Name}} - maestro</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <nav>
+    <a href="/">maestro</a> / <a href="/p/{{.Project.Name}}">{{.Project.Name}}</a>
+    {{if .Session}} / <a href="/p/{{.Project.Name}}/s/{{.Session.ID}}">{{.Session.ID}}</a>{{end}}
+    / <strong>{{.Task.ID}}</strong>
+  </nav>
+  <form action="/p/{{.Project.Name}}/search" method="get" class="topsearch">
+    <input type="search" name="text" placeholder="search this project..." autocomplete="off">
+    <button type="submit">search</button>
+  </form>
+</header>
+<main>
+  <section class="card">
+    <h2>
+      {{.Task.ID}}{{if .Task.Label}}: {{.Task.Label}}{{end}}
+      <span class="pill {{statusClass .Task.Status}}">{{.Task.Status}}</span>
+      {{if nonzero .Task.CondensedAt}}<span class="pill status-merged">condensed</span>{{end}}
+    </h2>
+    <dl class="meta">
+      <dt>Description</dt><dd>{{.Task.Description}}</dd>
+      {{if .Task.Session}}<dt>Session</dt><dd><a href="/p/{{.Project.Name}}/s/{{.Task.Session}}">{{.Task.Session}}</a>{{if .Session.Name}} <span class="muted">- {{.Session.Name}}</span>{{end}}</dd>{{end}}
+      {{if .Task.Tags}}<dt>Tags</dt><dd>{{range .Task.Tags}}<a href="/p/{{$.Project.Name}}/search?tags={{.}}" class="tag">{{.}}</a> {{end}}</dd>{{end}}
+      <dt>Branch</dt><dd class="mono">{{.Task.Branch}}</dd>
+      <dt>Base</dt><dd class="mono">{{.Task.BaseBranch}} <span class="muted">@ {{.Task.BaseCommit}}</span></dd>
+      {{if .Task.FinalCommit}}<dt>Final commit</dt><dd class="mono">{{.Task.FinalCommit}}</dd>{{end}}
+      {{if .Task.AgentID}}<dt>Agent ID</dt><dd class="mono">{{.Task.AgentID}}</dd>{{end}}
+      {{if .Task.WorktreePath}}<dt>Worktree</dt><dd class="mono">{{.Task.WorktreePath}}</dd>{{end}}
+      <dt>Created</dt><dd title="{{rfc3339 .Task.CreatedAt}}">{{shortTime .Task.CreatedAt}} ({{ago .Task.CreatedAt}})</dd>
+      <dt>Updated</dt><dd title="{{rfc3339 .Task.UpdatedAt}}">{{shortTime .Task.UpdatedAt}} ({{ago .Task.UpdatedAt}})</dd>
+      {{if nonzero .Task.CondensedAt}}<dt>Condensed at</dt><dd title="{{rfc3339 .Task.CondensedAt}}">{{shortTime .Task.CondensedAt}} ({{ago .Task.CondensedAt}})</dd>{{end}}
+    </dl>
+  </section>
+
+  {{if .Task.Summary}}
+  <section class="card">
+    <h3>Summary</h3>
+    <p>{{.Task.Summary}}</p>
+  </section>
+  {{end}}
+
+  {{if .Task.DeclaredFiles}}
+  <section class="card">
+    <h3>Declared files</h3>
+    <ul class="files">
+      {{range .Task.DeclaredFiles}}<li class="mono">{{.}}</li>{{end}}
+    </ul>
+  </section>
+  {{end}}
+
+  {{if .Task.ImplementerPrompt}}
+  <section class="card">
+    <details>
+      <summary><h3 class="inline">Implementer prompt ({{len .Task.ImplementerPrompt}} chars)</h3></summary>
+      <pre class="prompt">{{.Task.ImplementerPrompt}}</pre>
+    </details>
+  </section>
+  {{end}}
+
+  {{if .Task.Notes}}
+  <section>
+    <h3>Notes ({{len .Task.Notes}})</h3>
+    {{range .Task.Notes}}
+    <article class="note {{noteClass .Type}}">
+      <header class="note-header">
+        <span class="note-source">{{.Source}}</span>
+        {{if .Type}}<span class="note-type">{{.Type}}</span>{{end}}
+        <span class="note-time muted" title="{{rfc3339 .At}}">{{shortTime .At}}</span>
+      </header>
+      <pre class="note-body">{{.Content}}</pre>
+    </article>
+    {{end}}
+  </section>
+  {{end}}
+</main>
+</body>
+</html>

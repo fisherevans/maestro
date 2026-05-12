@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{.Session.ID}} - {{.Project.Name}} - maestro</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <nav><a href="/">maestro</a> / <a href="/p/{{.Project.Name}}">{{.Project.Name}}</a> / <strong>{{.Session.ID}}</strong></nav>
+  <form action="/p/{{.Project.Name}}/search" method="get" class="topsearch">
+    <input type="search" name="text" placeholder="search this project..." autocomplete="off">
+    <button type="submit">search</button>
+  </form>
+</header>
+<main>
+  <section class="card">
+    <h2>{{.Session.ID}} {{if .Session.Name}}<span class="muted">- {{.Session.Name}}</span>{{end}}</h2>
+    <dl class="meta">
+      <dt>Started</dt><dd title="{{rfc3339 .Session.StartedAt}}">{{shortTime .Session.StartedAt}} ({{ago .Session.StartedAt}})</dd>
+      {{if nonzero .Session.EndedAt}}
+      <dt>Ended (condensed)</dt><dd title="{{rfc3339 .Session.EndedAt}}">{{shortTime .Session.EndedAt}} ({{ago .Session.EndedAt}})</dd>
+      {{end}}
+    </dl>
+  </section>
+
+  {{if .Session.Condensed}}
+  <section class="card">
+    <h3>Condensed summary</h3>
+    <pre class="condensed">{{.Session.Condensed}}</pre>
+  </section>
+  {{end}}
+
+  <section>
+    <h3>Tasks in this session ({{len .Tasks}})</h3>
+    {{if not .Tasks}}
+      <p class="muted">No tasks in this session.</p>
+    {{else}}
+    <table class="rows">
+      <thead><tr><th>ID</th><th>Status</th><th>Label</th><th>Tags</th><th>Updated</th></tr></thead>
+      <tbody>
+        {{range .Tasks}}
+        <tr>
+          <td><a href="/p/{{$.Project.Name}}/t/{{.ID}}">{{.ID}}</a></td>
+          <td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td>
+          <td>{{if .Label}}{{.Label}}{{else}}<span class="muted">(no label)</span>{{end}}</td>
+          <td class="muted">{{join .Tags ", "}}</td>
+          <td title="{{rfc3339 .UpdatedAt}}">{{ago .UpdatedAt}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{end}}
+  </section>
+</main>
+</body>
+</html>

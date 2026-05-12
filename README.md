@@ -154,6 +154,7 @@ maestro worktree cleanup <id> [--force]
 maestro worktree restore <id>
 maestro statusline [--project=<name>] [--no-project-name]
 maestro status [--project=<name>] [--last-merged=N]
+maestro web [--port=9876] [--bind=127.0.0.1] [--open=true]
 ```
 
 Notes:
@@ -194,6 +195,26 @@ Tasks in maestro are durable. They outlive the session that created them and acc
 - **Tags** emerge organically. `tag list` enumerates them; `tag rename` canonicalizes drift.
 
 The skill's "What you never do" includes: never inline the implementer's full prompt twice; never inline a sub-agent's verbose report in your context; never skip `maestro search` before creating a task in an area you've worked in before; never auto-condense without proposing.
+
+## Web UI
+
+`maestro web` runs a local browser UI for exploring projects, sessions, tasks, condensed summaries, and the full implementer prompt / exchange log that the CLI also reads. Read-only; intended for the human reviewer (you), not for the agent.
+
+```
+maestro web                       # http://127.0.0.1:9876, opens browser
+maestro web --port=9000 --open=false
+maestro web --bind=0.0.0.0        # bind beyond localhost (not recommended)
+```
+
+Blocks until ctrl-C. Pages:
+
+- `/` - project list, with task/session counts and last activity
+- `/p/<project>` - project detail: active sessions, active tasks, recent merges, tag cloud
+- `/p/<project>/s/<session>` - session view: tasks in the session, plus condensed summary if condensed
+- `/p/<project>/t/<task>` - full task: description, tags, declared files, summary, the report/review/decision notes, and the implementer prompt (collapsed by default)
+- `/p/<project>/search` - filter by text, tag, session, status, date range
+
+State lives in the same `~/.maestro/<project>/state.json` the CLI reads, so changes from active orchestrator sessions show up on refresh. The server is stdlib-only (`net/http` + `html/template` + `embed`), single binary, no JS framework.
 
 ## Status snapshot
 

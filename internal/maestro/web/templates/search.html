@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>search - {{.Project.Name}} - maestro</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <nav><a href="/">maestro</a> / <a href="/p/{{.Project.Name}}">{{.Project.Name}}</a> / <strong>search</strong></nav>
+</header>
+<main>
+  <section class="card">
+    <h2>Search</h2>
+    <form action="/p/{{.Project.Name}}/search" method="get" class="searchform">
+      <div class="row">
+        <label>Text <input type="search" name="text" value="{{.Form.Text}}" placeholder="substring on label / description / summary" autocomplete="off"></label>
+      </div>
+      <div class="row">
+        <label>Tags <input type="text" name="tags" value="{{.Form.Tags}}" placeholder="comma-separated, any-of"></label>
+        <label>Session <input type="text" name="session" value="{{.Form.Session}}" placeholder="e.g. s3"></label>
+      </div>
+      <div class="row">
+        <label>Status <input type="text" name="status" value="{{.Form.Status}}" placeholder="merged,abandoned,in_progress,..."></label>
+        <label>Since <input type="date" name="since" value="{{.Form.Since}}"></label>
+        <label>Until <input type="date" name="until" value="{{.Form.Until}}"></label>
+      </div>
+      <div class="row">
+        <button type="submit">search</button>
+        <a href="/p/{{.Project.Name}}/search" class="muted">clear</a>
+      </div>
+    </form>
+  </section>
+
+  {{if .Results}}
+  <section>
+    <h3>Results ({{len .Results}})</h3>
+    <table class="rows">
+      <thead><tr><th>ID</th><th>Status</th><th>Label</th><th>Session</th><th>Tags</th><th>Updated</th></tr></thead>
+      <tbody>
+        {{range .Results}}
+        <tr>
+          <td><a href="/p/{{$.Project.Name}}/t/{{.ID}}">{{.ID}}</a></td>
+          <td><span class="pill {{statusClass .Status}}">{{.Status}}</span></td>
+          <td>{{if .Label}}{{.Label}}{{else}}<span class="muted">(no label)</span>{{end}}</td>
+          <td>{{if .Session}}<a href="/p/{{$.Project.Name}}/s/{{.Session}}">{{.Session}}</a>{{else}}<span class="muted">-</span>{{end}}</td>
+          <td class="muted">{{join .Tags ", "}}</td>
+          <td title="{{rfc3339 .UpdatedAt}}">{{ago .UpdatedAt}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </section>
+  {{else if .Form.Text}}
+    <p class="muted">No results.</p>
+  {{else if .Form.Tags}}
+    <p class="muted">No results.</p>
+  {{end}}
+
+  {{if .Tags}}
+  <section>
+    <h3>Tags in this project</h3>
+    <div class="tagcloud">
+      {{range .Tags}}
+      <a href="/p/{{$.Project.Name}}/search?tags={{.Tag}}" class="tag">{{.Tag}} <span class="muted">({{.Count}})</span></a>
+      {{end}}
+    </div>
+  </section>
+  {{end}}
+</main>
+</body>
+</html>
