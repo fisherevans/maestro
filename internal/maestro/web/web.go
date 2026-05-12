@@ -136,6 +136,17 @@ func loadTemplates() (*template.Template, error) {
 			}
 			return "note-" + t
 		},
+		"markdown":    renderMarkdown,
+		"parseReport": parseReportNote,
+		"reportFieldClass": func(key string) string {
+			return "field-" + strings.ToLower(strings.ReplaceAll(key, "_", "-"))
+		},
+		"shortSha": func(s string) string {
+			if len(s) > 12 {
+				return s[:12]
+			}
+			return s
+		},
 	}
 
 	pattern := "templates/*.html"

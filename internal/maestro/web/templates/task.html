@@ -18,49 +18,44 @@
   </form>
 </header>
 <main>
-  <section class="card">
+  <section class="task-header">
     <h2>
       {{.Task.ID}}{{if .Task.Label}}: {{.Task.Label}}{{end}}
       <span class="pill {{statusClass .Task.Status}}">{{.Task.Status}}</span>
       {{if nonzero .Task.CondensedAt}}<span class="pill status-merged">condensed</span>{{end}}
     </h2>
-    <dl class="meta">
-      <dt>Description</dt><dd>{{.Task.Description}}</dd>
-      {{if .Task.Session}}<dt>Session</dt><dd><a href="/project/{{.Project.Name}}/session/{{.Task.Session}}">{{.Task.Session}}</a>{{if .Session.Name}} <span class="muted">- {{.Session.Name}}</span>{{end}}</dd>{{end}}
-      {{if .Task.Tags}}<dt>Tags</dt><dd>{{range .Task.Tags}}<a href="/project/{{$.Project.Name}}/search?tags={{.}}" class="tag">{{.}}</a> {{end}}</dd>{{end}}
-      <dt>Branch</dt><dd class="mono">{{.Task.Branch}}</dd>
-      <dt>Base</dt><dd class="mono">{{.Task.BaseBranch}} <span class="muted">@ {{.Task.BaseCommit}}</span></dd>
-      {{if .Task.FinalCommit}}<dt>Final commit</dt><dd class="mono">{{.Task.FinalCommit}}</dd>{{end}}
-      {{if .Task.AgentID}}<dt>Agent ID</dt><dd class="mono">{{.Task.AgentID}}</dd>{{end}}
-      {{if .Task.WorktreePath}}<dt>Worktree</dt><dd class="mono">{{.Task.WorktreePath}}</dd>{{end}}
-      <dt>Created</dt><dd title="{{rfc3339 .Task.CreatedAt}}">{{shortTime .Task.CreatedAt}} ({{ago .Task.CreatedAt}})</dd>
-      <dt>Updated</dt><dd title="{{rfc3339 .Task.UpdatedAt}}">{{shortTime .Task.UpdatedAt}} ({{ago .Task.UpdatedAt}})</dd>
-      {{if nonzero .Task.CondensedAt}}<dt>Condensed at</dt><dd title="{{rfc3339 .Task.CondensedAt}}">{{shortTime .Task.CondensedAt}} ({{ago .Task.CondensedAt}})</dd>{{end}}
-    </dl>
+
+    <div class="task-quickmeta">
+      {{if .Task.Session}}
+        <span class="quickmeta-item"><span class="muted">in session</span> <a href="/project/{{.Project.Name}}/session/{{.Task.Session}}">{{.Task.Session}}</a>{{if .Session.Name}} <span class="muted">({{.Session.Name}})</span>{{end}}</span>
+      {{end}}
+      <span class="quickmeta-item" title="{{rfc3339 .Task.CreatedAt}}"><span class="muted">created</span> {{ago .Task.CreatedAt}}</span>
+      <span class="quickmeta-item" title="{{rfc3339 .Task.UpdatedAt}}"><span class="muted">updated</span> {{ago .Task.UpdatedAt}}</span>
+      {{if .Task.Tags}}
+        <span class="quickmeta-item quickmeta-tags">
+          {{range .Task.Tags}}<a href="/project/{{$.Project.Name}}/search?tags={{.}}" class="tag">{{.}}</a>{{end}}
+        </span>
+      {{end}}
+    </div>
+
+    {{if .Task.Description}}
+    <div class="task-description">{{markdown .Task.Description}}</div>
+    {{end}}
   </section>
 
   {{if .Task.Summary}}
   <section class="card">
     <h3>Summary</h3>
-    <p>{{.Task.Summary}}</p>
+    <div class="markdown">{{markdown .Task.Summary}}</div>
   </section>
   {{end}}
 
   {{if .Task.DeclaredFiles}}
   <section class="card">
-    <h3>Declared files</h3>
+    <h3>Declared files <span class="help" title="The files the implementer agent declared upfront that it expected to touch. Used by `maestro conflicts` to detect when two parallel tasks would step on each other.">?</span></h3>
     <ul class="files">
       {{range .Task.DeclaredFiles}}<li class="mono">{{.}}</li>{{end}}
     </ul>
-  </section>
-  {{end}}
-
-  {{if .Task.ImplementerPrompt}}
-  <section class="card">
-    <details>
-      <summary><h3 class="inline">Implementer prompt ({{len .Task.ImplementerPrompt}} chars)</h3></summary>
-      <pre class="prompt">{{.Task.ImplementerPrompt}}</pre>
-    </details>
   </section>
   {{end}}
 
@@ -72,13 +67,48 @@
       <header class="note-header">
         <span class="note-source">{{.Source}}</span>
         {{if .Type}}<span class="note-type">{{.Type}}</span>{{end}}
-        <span class="note-time muted" title="{{rfc3339 .At}}">{{shortTime .At}}</span>
+        <span class="note-time muted" title="{{rfc3339 .At}}">{{ago .At}}</span>
       </header>
-      <pre class="note-body">{{.Content}}</pre>
+      {{$fields := parseReport .Content}}
+      {{if $fields}}
+        <dl class="note-fields">
+          {{range $fields}}
+          <dt class="{{reportFieldClass .Key}}">{{.Key}}</dt>
+          <dd class="{{reportFieldClass .Key}}">{{.HTML}}</dd>
+          {{end}}
+        </dl>
+      {{else}}
+        <div class="note-body markdown">{{markdown .Content}}</div>
+      {{end}}
     </article>
     {{end}}
   </section>
   {{end}}
+
+  {{if .Task.ImplementerPrompt}}
+  <section class="card">
+    <details>
+      <summary><span class="h3-inline">Implementer prompt</span> <span class="muted">({{len .Task.ImplementerPrompt}} chars)</span></summary>
+      <div class="markdown markdown-dense">{{markdown .Task.ImplementerPrompt}}</div>
+    </details>
+  </section>
+  {{end}}
+
+  <section class="card">
+    <details>
+      <summary><span class="h3-inline">Technical details</span> <span class="muted">(branch, commits, agent, paths)</span></summary>
+      <dl class="meta">
+        <dt>Branch</dt><dd class="mono">{{.Task.Branch}}</dd>
+        <dt>Base</dt><dd class="mono">{{.Task.BaseBranch}} <span class="muted">@ {{shortSha .Task.BaseCommit}}</span></dd>
+        {{if .Task.FinalCommit}}<dt>Final commit</dt><dd class="mono">{{shortSha .Task.FinalCommit}}</dd>{{end}}
+        {{if .Task.AgentID}}<dt>Agent ID</dt><dd class="mono">{{.Task.AgentID}}</dd>{{end}}
+        {{if .Task.WorktreePath}}<dt>Worktree</dt><dd class="mono">{{.Task.WorktreePath}}</dd>{{end}}
+        <dt>Created</dt><dd>{{rfc3339 .Task.CreatedAt}}</dd>
+        <dt>Updated</dt><dd>{{rfc3339 .Task.UpdatedAt}}</dd>
+        {{if nonzero .Task.CondensedAt}}<dt>Condensed at</dt><dd>{{rfc3339 .Task.CondensedAt}}</dd>{{end}}
+      </dl>
+    </details>
+  </section>
 </main>
 </body>
 </html>
