@@ -632,6 +632,23 @@ func normalizePath(p string) string {
 	return strings.TrimSpace(filepath.Clean(p))
 }
 
+// ApproxTokens returns a rough token-count estimate for a string using the
+// commonly-cited "~4 chars per token" heuristic for English text. Suitable
+// for "how big is this prompt" displays in the CLI and web UI. Not exact;
+// not a substitute for a real tokenizer if you need precision.
+func ApproxTokens(s string) int {
+	n := len(s)
+	if n == 0 {
+		return 0
+	}
+	// round to nearest, with a floor of 1 so non-empty strings never show 0
+	t := (n + 2) / 4
+	if t < 1 {
+		t = 1
+	}
+	return t
+}
+
 func validateProjectName(name string) error {
 	if name == "" {
 		return errors.New("empty project name")

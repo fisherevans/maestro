@@ -144,7 +144,7 @@
   {{if .Task.ImplementerPrompt}}
   <section class="card">
     <details>
-      <summary><span class="h3-inline">Implementer prompt</span> <span class="muted">({{len .Task.ImplementerPrompt}} chars)</span></summary>
+      <summary><span class="h3-inline">Implementer prompt</span> <span class="muted">(~{{tokens .Task.ImplementerPrompt}} tokens)</span></summary>
       <div class="markdown markdown-dense">{{markdown .Task.ImplementerPrompt}}</div>
     </details>
   </section>

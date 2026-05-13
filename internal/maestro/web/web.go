@@ -139,6 +139,7 @@ func loadTemplates() (*template.Template, error) {
 		"markdown":    renderMarkdown,
 		"parseReport": parseReportNote,
 		"renderNote":  renderNoteContent,
+		"tokens":      maestro.ApproxTokens,
 		"reportFieldClass": func(key string) string {
 			return "field-" + strings.ToLower(strings.ReplaceAll(key, "_", "-"))
 		},

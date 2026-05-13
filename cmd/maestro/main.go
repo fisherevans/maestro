@@ -610,9 +610,20 @@ func cmdTaskNew(args []string) error {
 	if sessionID == "" {
 		sessionID = os.Getenv("MAESTRO_SESSION")
 	}
+	if sessionID == "" {
+		return errors.New("no session: every task must belong to a session. Run `maestro session start --name=\"<short label>\"` and `export MAESTRO_SESSION=<id>` from the printed output, or pass `--session=<id>` to this command")
+	}
+	// Session-existence check happens after state is loaded below.
 	store, st, err := loadState(*project)
 	if err != nil {
 		return err
+	}
+	sess := st.FindSession(sessionID)
+	if sess == nil {
+		return fmt.Errorf("session %q does not exist in project %q. Run `maestro session list` to see existing sessions, or `maestro session start --name=\"...\"` to create one", sessionID, st.Project.Name)
+	}
+	if !sess.EndedAt.IsZero() {
+		return fmt.Errorf("session %q has been condensed; new tasks can't be added. Start a new session with `maestro session start`", sessionID)
 	}
 
 	baseBranch := *base
@@ -940,7 +951,7 @@ func cmdTaskReport(args []string) error {
 	if *asJSON {
 		return writeJSON(os.Stdout, &report)
 	}
-	fmt.Printf("report stored on %s (status=%s, summary=%d chars", id, report.Status, len(report.Summary))
+	fmt.Printf("report stored on %s (status=%s, summary=~%d tokens", id, report.Status, maestro.ApproxTokens(report.Summary))
 	if len(report.Files) > 0 {
 		fmt.Printf(", files=%d", len(report.Files))
 	}
@@ -2214,7 +2225,7 @@ func printTask(w io.Writer, t *maestro.Task, asJSON bool) error {
 		fmt.Fprintf(w, "agent_id: %s\n", t.AgentID)
 	}
 	if t.ImplementerPrompt != "" {
-		fmt.Fprintf(w, "implementer_prompt: %d chars (use `task get-prompt %s` to read)\n", len(t.ImplementerPrompt), t.ID)
+		fmt.Fprintf(w, "implementer_prompt: ~%d tokens (use `task get-prompt %s` to read)\n", maestro.ApproxTokens(t.ImplementerPrompt), t.ID)
 	}
 	if len(t.DeclaredFiles) > 0 {
 		fmt.Fprintf(w, "declared_files: %s\n", strings.Join(t.DeclaredFiles, ","))
