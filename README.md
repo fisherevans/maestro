@@ -302,6 +302,10 @@ Young project. Built and exercised across a handful of real sessions on a multi-
 - Conflict detection is by declared file overlap only. Two tasks that touch the same file in different functions still serialize.
 - `project rename` refuses while any worktrees exist (worktree paths are absolute and would break). Use the milestone-fork pattern instead - just `maestro init` a new project name on the same repo.
 
+## Developing
+
+For dataflow, on-disk layout, the data model, design decisions, dev workflow, and step-by-step recipes for adding a CLI subcommand / a web page / a skill section, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Aimed at a human or agent picking the codebase up cold; ~400 lines, shortens the first-hour grep.
+
 ## Contributing
 
-Issues and PRs welcome. The codebase is small (~1500 lines Go + ~350 lines markdown skill). The skill prompt is the highest-leverage surface; if you have ideas on tightening orchestrator behavior, that's the place. The CLI is intentionally bounded; new features should justify the additional protocol surface.
+Issues and PRs welcome. The codebase is small (~3000 lines Go + ~600 lines markdown skill + ~500 lines HTML/CSS). The skill prompt is the highest-leverage surface; if you have ideas on tightening orchestrator behavior, that's the place. The CLI is intentionally bounded; new features should justify the additional protocol surface. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the lay of the land before diving in.
